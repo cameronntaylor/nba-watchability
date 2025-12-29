@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import pandas as pd
+import streamlit as st
+from dateutil import tz
+from dateutil import parser as dtparser
+
+from core.odds_api import fetch_nba_spreads_today
+from core.standings import fetch_team_win_pct_map, get_win_pct
+from core.metric import MetricParams, compute_cis
+
+st.set_page_config(page_title="NBA Games-of-the-Day (CIS)", layout="wide")
+
+st.title("NBA Games-of-the-Day Dashboard")
+st.caption("Ranks today’s NBA games by **Competitive Interest Score (CIS)** using spreads + team win%.")
+
+# --- Controls ---
+with st.sidebar:
+    st.header("Metric controls")
+
+    variant = st.selectbox(
+        "Quality function f(w1, w2)",
+        ["avg", "product", "max", "avg_minus_gap"],
+        index=0,
+        help=(
+            "avg: average win%\n"
+            "product: rewards two strong teams\n"
+            "max: star/elite-team effect\n"
+            "avg_minus_gap: parity bonus via penalty on win% gap"
+        ),
+    )
+
+    a = st.slider("a (closeness weight)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
+    b = st.slider("b (quality weight)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
+
+    c = 0.0
+    if variant == "avg_minus_gap":
+        c = st.slider("c (penalty on |w1-w2|)", min_value=0.0, max_value=3.0, value=0.5, step=0.1)
+
+    spread_cap = st.slider("Spread cap for normalization", min_value=8.0, max_value=25.0, value=15.0, step=1.0)
+
+    st.divider()
+    st.write("**Interpretation**")
+    st.write("- Higher CIS = more watchable")
+    st.write("- Closer spreads boost score")
+    st.write("- Better teams (win%) boost score")
+
+params = MetricParams(a=a, b=b, c=c, spread_cap=spread_cap)
+
+@st.cache_data(ttl=60 * 15)  # 15 min
+def load_games():
+    return fetch_nba_spreads_today()
+
+@st.cache_data(ttl=60 * 60)  # 1 hour
+def load_standings():
+    return fetch_team_win_pct_map()
+
+games = load_games()
+winpct_map = load_standings()
+
+local_tz = tz.gettz("America/Los_Angeles")
+
+rows = []
+for g in games:
+    w_home = get_win_pct(g.home_team, winpct_map, default=0.5)
+    w_away = get_win_pct(g.away_team, winpct_map, default=0.5)
+
+    cis, spread_term, fval, abs_spread = compute_cis(
+        home_spread=g.home_spread,
+        w_home=w_home,
+        w_away=w_away,
+        params=params,
+        variant=variant,  # type: ignore
+    )
+
+    # Commence time to local
+    if g.commence_time_utc:
+        dt_utc = dtparser.isoparse(g.commence_time_utc)
+        dt_local = dt_utc.astimezone(local_tz)
+        tip_local = dt_local.strftime("%a %I:%M %p")
+    else:
+        tip_local = "Unknown"
+
+    rows.append({
+        "Tip (PT)": tip_local,
+        "Matchup": f"{g.away_team} @ {g.home_team}",
+        "Home spread": g.home_spread,
+        "|spread|": abs_spread,
+        "Win% (away)": round(w_away, 3),
+        "Win% (home)": round(w_home, 3),
+        "Spread closeness term": round(spread_term, 3),
+        "f(w1,w2)": round(fval, 3),
+        "CIS": round(cis, 3),
+        "Spread source": g.spread_source,
+    })
+
+df = pd.DataFrame(rows)
+if df.empty:
+    st.warning("No games returned from Odds API. (Off day? API issue? Check your key/limits.)")
+    st.stop()
+
+df = df.sort_values("CIS", ascending=False).reset_index(drop=True)
+
+# --- Main table ---
+st.subheader("Today’s games ranked by CIS")
+st.dataframe(
+    df,
+    use_container_width=True,
+    hide_index=True,
+)
+
+# --- Top 3 cards ---
+st.subheader("Top games (quick explainers)")
+topn = df.head(3).to_dict(orient="records")
+cols = st.columns(3)
+for i, rec in enumerate(topn):
+    with cols[i]:
+        st.metric(label=rec["Matchup"], value=rec["CIS"])
+        st.write(f"Tip: **{rec['Tip (PT)']}**")
+        st.write(f"Spread: **{rec['Home spread']}** (|spread|={rec['|spread|']})")
+        st.write(f"Win%: away **{rec['Win% (away)']}**, home **{rec['Win% (home)']}**")
+        st.caption(
+            f"Why: closeness={rec['Spread closeness term']}  •  "
+            f"quality={rec['f(w1,w2)']} ({variant})"
+        )
+
+st.divider()
+st.caption("Notes: standings may fallback to 0.5 if nba_api is unavailable; odds cached to respect API limits.")
