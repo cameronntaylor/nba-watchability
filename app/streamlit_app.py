@@ -13,8 +13,10 @@ from dateutil import tz
 from dateutil import parser as dtparser
 
 from core.odds_api import fetch_nba_spreads_today
-from core.standings import fetch_team_win_pct_map, get_win_pct
+from core.standings import get_win_pct
+from core.standings_espn import fetch_team_win_pct_map
 from core.metric import MetricParams, compute_cis
+from core.team_meta import get_logo_url
 
 st.set_page_config(page_title="NBA Games-of-the-Day (CIS)", layout="wide")
 
@@ -110,25 +112,57 @@ df = df.sort_values("CIS", ascending=False).reset_index(drop=True)
 
 # --- Main table ---
 st.subheader("Today’s games ranked by CIS")
-st.dataframe(
-    df,
-    use_container_width=True,
-    hide_index=True,
-)
+for _, row in df.iterrows():
+    away, home = row["Matchup"].split(" @ ")
+    away_logo = get_logo_url(away)
+    home_logo = get_logo_url(home)
+
+    with st.expander(f"{away} @ {home} — CIS {row['CIS']}"):
+        cols = st.columns([1, 4, 1, 4, 3])
+
+        if away_logo:
+            cols[0].image(away_logo, width=40)
+        cols[1].markdown(f"**{away}**")
+
+        if home_logo:
+            cols[2].image(home_logo, width=40)
+        cols[3].markdown(f"**{home}**")
+
+        cols[4].write(
+            f"""
+            Tip: {row['Tip (PT)']}  
+            Spread: {row['Home spread']}  
+            Win%: {row['Win% (away)']} vs {row['Win% (home)']}  
+            """
+        )
 
 # --- Top 3 cards ---
 st.subheader("Top games (quick explainers)")
 topn = df.head(3).to_dict(orient="records")
 cols = st.columns(3)
+
 for i, rec in enumerate(topn):
     with cols[i]:
-        st.metric(label=rec["Matchup"], value=rec["CIS"])
-        st.write(f"Tip: **{rec['Tip (PT)']}**")
-        st.write(f"Spread: **{rec['Home spread']}** (|spread|={rec['|spread|']})")
-        st.write(f"Win%: away **{rec['Win% (away)']}**, home **{rec['Win% (home)']}**")
-        st.caption(
-            f"Why: closeness={rec['Spread closeness term']}  •  "
-            f"quality={rec['f(w1,w2)']} ({variant})"
+        away, home = rec["Matchup"].split(" @ ")
+
+        away_logo = get_logo_url(away)
+        home_logo = get_logo_url(home)
+
+        # Team row
+        team_cols = st.columns([1, 3, 1, 3])
+        if away_logo:
+            team_cols[0].image(away_logo, width=50)
+        team_cols[1].markdown(f"**{away}**")
+
+        if home_logo:
+            team_cols[2].image(home_logo, width=50)
+        team_cols[3].markdown(f"**{home}**")
+
+        st.metric("CIS", rec["CIS"])
+        st.caption(f"Tip: {rec['Tip (PT)']}")
+        st.write(f"Spread: {rec['Home spread']}")
+        st.write(
+            f"Win% — away {rec['Win% (away)']}, home {rec['Win% (home)']}"
         )
 
 st.divider()
