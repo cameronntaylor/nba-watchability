@@ -1,0 +1,12 @@
+# Environment variables / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Streamlit
+.streamlit/
+
+# Local data / caches
+data/
