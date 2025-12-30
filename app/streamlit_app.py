@@ -66,6 +66,11 @@ def load_standings():
 
 games = load_games()
 winpct_map = load_standings()
+if not winpct_map:
+    st.warning(
+        "Could not load standings from ESPN; win% will default to 0.5. "
+        "Try refreshing, or check your network connectivity."
+    )
 
 local_tz = tz.gettz("America/Los_Angeles")
 

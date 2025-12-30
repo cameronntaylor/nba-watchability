@@ -3,26 +3,30 @@ import requests
 from core.standings import _normalize_team_name
 
 ESPN_STANDINGS_URL = (
-    "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/standings"
+    "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings"
 )
 
+
 def _extract_entries(data):
-    standings = data.get("standings")
-    if standings and "entries" in standings:
-        return standings["entries"]
+    entries = []
 
-    for child in data.get("children", []):
-        standings = child.get("standings")
-        if standings and "entries" in standings:
-            return standings["entries"]
+    def walk(obj):
+        if isinstance(obj, dict):
+            standings = obj.get("standings")
+            if isinstance(standings, dict):
+                s_entries = standings.get("entries")
+                if isinstance(s_entries, list) and s_entries:
+                    entries.extend(s_entries)
+            for v in obj.values():
+                if isinstance(v, (dict, list)):
+                    walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                if isinstance(v, (dict, list)):
+                    walk(v)
 
-    for sport in data.get("sports", []):
-        for league in sport.get("leagues", []):
-            standings = league.get("standings")
-            if standings and "entries" in standings:
-                return standings["entries"]
-
-    return []
+    walk(data)
+    return entries
 
 
 def fetch_team_win_pct_map():
@@ -40,9 +44,13 @@ def fetch_team_win_pct_map():
         if not team:
             continue
         stats = {s.get("name"): s.get("value") for s in entry.get("stats", [])}
-        wins = stats.get("wins")
-        losses = stats.get("losses")
-        if wins is not None and losses is not None:
-            out[_normalize_team_name(team)] = wins / (wins + losses)
+        win_pct = stats.get("winPercent")
+        if win_pct is None:
+            wins = stats.get("wins")
+            losses = stats.get("losses")
+            if wins is not None and losses is not None:
+                win_pct = wins / (wins + losses)
+        if win_pct is not None:
+            out[_normalize_team_name(team)] = float(win_pct)
 
     return out
