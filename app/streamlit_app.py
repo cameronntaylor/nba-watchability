@@ -16,6 +16,9 @@ from core.odds_api import fetch_nba_spreads_today
 from core.standings import fetch_team_win_pct_map, get_win_pct
 from core.metric import MetricParams, compute_cis
 
+from dotenv import load_dotenv
+load_dotenv()
+
 st.set_page_config(page_title="NBA Games-of-the-Day (CIS)", layout="wide")
 
 st.title("NBA Games-of-the-Day Dashboard")
