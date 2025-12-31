@@ -20,9 +20,6 @@ from core.team_meta import get_logo_url
 
 from streamlit.components.v1 import html
 
-from dotenv import load_dotenv
-load_dotenv()
-
 st.set_page_config(page_title="NBA Games-of-the-Day (CIS)", layout="wide")
 
 # --- Auto-refresh the page every hour (3600000 ms) ---
