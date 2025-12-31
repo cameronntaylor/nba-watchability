@@ -11,17 +11,31 @@ import pandas as pd
 import streamlit as st
 from dateutil import tz
 from dateutil import parser as dtparser
-
+import datetime as dt
 from core.odds_api import fetch_nba_spreads_today
 from core.standings import get_win_pct
 from core.standings_espn import fetch_team_win_pct_map
 from core.metric import MetricParams, compute_cis
 from core.team_meta import get_logo_url
 
+from streamlit.components.v1 import html
+
 from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(page_title="NBA Games-of-the-Day (CIS)", layout="wide")
+
+# --- Auto-refresh the page every hour (3600000 ms) ---
+html(
+    """
+    <script>
+        setTimeout(function() {
+            window.location.reload();
+        }, 3600000);
+    </script>
+    """,
+    height=0,
+)
 
 st.title("NBA Games-of-the-Day Dashboard")
 st.caption("Ranks today’s NBA games by **Competitive Interest Score (CIS)** using spreads + team win%.")
@@ -59,7 +73,7 @@ with st.sidebar:
 
 params = MetricParams(a=a, b=b, c=c, spread_cap=spread_cap)
 
-@st.cache_data(ttl=60 * 15)  # 15 min
+@st.cache_data(ttl=60 * 60)  # 1 hour
 def load_games():
     return fetch_nba_spreads_today()
 
@@ -174,4 +188,7 @@ for i, rec in enumerate(topn):
         )
 
 st.divider()
-st.caption("Notes: standings may fallback to 0.5 if nba_api is unavailable; odds cached to respect API limits.")
+last_updated = dt.datetime.now(
+    tz=tz.gettz("America/Los_Angeles")
+).strftime("%Y-%m-%d %I:%M %p PT")
+st.caption(f"Last updated: {last_updated}")
