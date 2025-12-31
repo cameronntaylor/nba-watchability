@@ -41,34 +41,28 @@ st.caption("Ranks today’s NBA games by **Competitive Interest Score (CIS)** us
 with st.sidebar:
     st.header("Metric controls")
 
-    variant = st.selectbox(
-        "Quality function f(w1, w2)",
-        ["avg", "product", "max", "avg_minus_gap"],
-        index=0,
-        help=(
-            "avg: average win%\n"
-            "product: rewards two strong teams\n"
-            "max: star/elite-team effect\n"
-            "avg_minus_gap: parity bonus via penalty on win% gap"
-        ),
+    b = st.select_slider(
+        "Closeness vs. quality",
+        options=[2.0, 5.0, 8.0],
+        value=5.0,
+        format_func={
+            2.0: "mostly close games",
+            5.0: "balanced",
+            8.0: "mostly good teams",
+        }.get,
     )
+    a = 10.0 - float(b)
 
-    a = st.slider("a (closeness weight)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
-    b = st.slider("b (quality weight)", min_value=0.0, max_value=5.0, value=2.0, step=0.1)
+    st.markdown("<div style='height: 24px;'></div>", unsafe_allow_html=True)
 
-    c = 0.0
-    if variant == "avg_minus_gap":
-        c = st.slider("c (penalty on |w1-w2|)", min_value=0.0, max_value=3.0, value=0.5, step=0.1)
+    variant_label = st.selectbox(
+        "Quality function",
+        ["both teams good", "one team good"],
+        index=0,
+    )
+    variant = {"both teams good": "product", "one team good": "max"}[variant_label]
 
-    spread_cap = st.slider("Spread cap for normalization", min_value=8.0, max_value=25.0, value=15.0, step=1.0)
-
-    st.divider()
-    st.write("**Interpretation**")
-    st.write("- Higher CIS = more watchable")
-    st.write("- Closer spreads boost score")
-    st.write("- Better teams (win%) boost score")
-
-params = MetricParams(a=a, b=b, c=c, spread_cap=spread_cap)
+params = MetricParams(a=a, b=b, spread_cap=15.0)
 
 @st.cache_data(ttl=60 * 60)  # 1 hour
 def load_games():
