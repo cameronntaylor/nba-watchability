@@ -14,7 +14,8 @@ import altair as alt
 from dateutil import tz
 from dateutil import parser as dtparser
 import datetime as dt
-from core.odds_api import fetch_nba_spreads_today
+from core.odds_api import fetch_nba_spreads_window
+from core.schedule_espn import fetch_games_for_date
 from core.standings import get_win_pct
 from core.standings_espn import fetch_team_win_pct_map
 from core.team_meta import get_logo_url
@@ -36,6 +37,7 @@ st.markdown(
 .menu-awi {width:110px;}
 .menu-awi .score {font-size: 24px; font-weight: 700; line-height: 1.05;}
 .menu-awi .label {font-size: 12px; color: rgba(49,51,63,0.7); line-height: 1.2;}
+.live-badge {color: #d62728; font-weight: 700; margin-left: 6px;}
 .menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 280px;}
 .menu-teams .team {display:flex; align-items:center; gap:8px; min-width: 0;}
 .menu-teams img {width: 28px; height: 28px;}
@@ -64,13 +66,55 @@ st.title(
     "What to watch? NBA Watchability Today"
 )
 
-@st.cache_data(ttl=60 * 60)  # 1 hour
+@st.cache_data(ttl=60 * 5)  # 5 min
 def load_games():
-    return fetch_nba_spreads_today()
+    return fetch_nba_spreads_window(days_ahead=2)
 
 @st.cache_data(ttl=60 * 60)  # 1 hour
 def load_standings():
     return fetch_team_win_pct_map()
+
+def _parse_score(x):
+    try:
+        if x is None:
+            return None
+        return int(float(x))
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60 * 10)  # 10 min (live scores)
+def load_espn_game_map(local_dates_iso: tuple[str, ...]) -> dict[tuple[str, str, str], dict]:
+    """
+    Map (date_iso, home_team_lower, away_team_lower) -> dict with:
+      - state ('pre'/'in'/'post')
+      - home_score (int|None)
+      - away_score (int|None)
+      - time_remaining (str|None) e.g. '5:32 Q3'
+    """
+    out: dict[tuple[str, str, str], dict] = {}
+    for iso in local_dates_iso:
+        try:
+            y, m, d = (int(x) for x in iso.split("-"))
+            day = dt.date(y, m, d)
+            games = fetch_games_for_date(day)
+        except Exception:
+            continue
+        for g in games:
+            home = str(g.get("home_team", "")).lower().strip()
+            away = str(g.get("away_team", "")).lower().strip()
+            state = str(g.get("state", ""))
+            home_score = _parse_score(g.get("home_score"))
+            away_score = _parse_score(g.get("away_score"))
+            time_remaining = g.get("time_remaining")
+            if home and away and state:
+                out[(iso, home, away)] = {
+                    "state": state,
+                    "home_score": home_score,
+                    "away_score": away_score,
+                    "time_remaining": time_remaining,
+                }
+    return out
 
 games = load_games()
 winpct_map = load_standings()
@@ -94,15 +138,21 @@ for g in games:
     if g.commence_time_utc:
         dt_utc = dtparser.isoparse(g.commence_time_utc)
         dt_local = dt_utc.astimezone(local_tz)
+        local_date = dt_local.date()
+        day_name = dt_local.strftime("%A")
         tip_local = dt_local.strftime("%a %I:%M %p")
         tip_short = dt_local.strftime("%a %I%p").replace(" 0", " ")
     else:
+        local_date = None
+        day_name = "Unknown"
         tip_local = "Unknown"
         tip_short = "?"
 
     rows.append({
         "Tip (PT)": tip_local,
         "Tip short": tip_short,
+        "Local date": local_date,
+        "Day": day_name,
         "Matchup": f"{g.away_team} @ {g.home_team}",
         "Away team": g.away_team,
         "Home team": g.home_team,
@@ -127,6 +177,57 @@ if df.empty:
 
 df = df.sort_values("aWI", ascending=False).reset_index(drop=True)
 
+df_dates = (
+    df.dropna(subset=["Local date"])
+    .sort_values("Local date")
+    .loc[:, ["Local date", "Day"]]
+    .drop_duplicates()
+)
+date_options = [d.isoformat() for d in df_dates["Local date"].tolist()]
+def _fmt_m_d(d: dt.date) -> str:
+    return f"{d.month}/{d.day}"
+
+date_to_label = {
+    d.isoformat(): f"{day} {_fmt_m_d(d)}"
+    for d, day in df_dates.itertuples(index=False, name=None)
+}
+
+game_map = load_espn_game_map(tuple(date_options))
+# Annotate live games (ESPN 'in' state).
+if date_options:
+    def _lookup_game(r, key: str):
+        rec = game_map.get(
+            (str(r["Local date"]), str(r["Home team"]).lower().strip(), str(r["Away team"]).lower().strip())
+        )
+        if not rec:
+            return None
+        return rec.get(key)
+
+    df["Status"] = df.apply(lambda r: _lookup_game(r, "state") or "pre", axis=1)
+    df["Away score"] = df.apply(lambda r: _lookup_game(r, "away_score"), axis=1)
+    df["Home score"] = df.apply(lambda r: _lookup_game(r, "home_score"), axis=1)
+    df["Time remaining"] = df.apply(lambda r: _lookup_game(r, "time_remaining"), axis=1)
+else:
+    df["Status"] = "pre"
+    df["Away score"] = None
+    df["Home score"] = None
+    df["Time remaining"] = None
+df["Is live"] = df["Status"] == "in"
+def _tip_display(r) -> str:
+    if not bool(r["Is live"]):
+        return str(r["Tip short"])
+    away = r.get("Away score")
+    home = r.get("Home score")
+    tr = r.get("Time remaining")
+    if away is None or home is None:
+        return f"🚨 LIVE{(' ' + str(tr)) if tr else ''}"
+    return f"🚨 {int(away)}-{int(home)}{(' ' + str(tr)) if tr else ''}"
+
+df["Tip display"] = df.apply(_tip_display, axis=1)
+
+# Remove finished games from both views.
+df = df[df["Status"] != "post"].copy()
+
 left, right = st.columns([1.05, 1.0], gap="large")
 
 with left:
@@ -134,6 +235,17 @@ with left:
 
     QUALITY_FLOOR = getattr(watch, "QUALITY_FLOOR", 0.1)
     CLOSENESS_FLOOR = getattr(watch, "CLOSENESS_FLOOR", 0.1)
+
+    if date_options:
+        selected_date = st.segmented_control(
+            "Day",
+            options=date_options,
+            format_func=lambda x: date_to_label.get(x, x),
+            default=date_options[0],
+        )
+        df_plot = df[df["Local date"].astype(str) == selected_date].copy()
+    else:
+        df_plot = df.copy()
 
     region_order = ["Amazing game", "Great game", "Good game", "Ok game", "Crap game"]
     region_colors = {
@@ -176,22 +288,86 @@ with left:
             scale=alt.Scale(domain=region_order, range=[region_colors[r] for r in region_order]),
             legend=None,
         ),
+        tooltip=[],
     )
 
-    x_axis = alt.X(
-        "Team quality:Q",
-        scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]),
-        axis=alt.Axis(title="Team Quality", format=".2f"),
-    )
-    y_axis = alt.Y(
-        "Closeness:Q",
-        scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]),
-        axis=alt.Axis(title="Closeness", format=".2f"),
+    axes = alt.Chart(df_plot).mark_point(opacity=0).encode(
+        x=alt.X(
+            "Team quality:Q",
+            scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]),
+            axis=alt.Axis(
+                title="Team Quality",
+                format=".2f",
+                titleColor="rgba(0,0,0,0.9)",
+                titleFontSize=18,
+                titleFontWeight="bold",
+                titlePadding=28,
+                labelColor="rgba(0,0,0,0.65)",
+                labelFontSize=12,
+            ),
+        ),
+        y=alt.Y(
+            "Closeness:Q",
+            scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]),
+            axis=alt.Axis(
+                title="Closeness",
+                format=".2f",
+                titleColor="rgba(0,0,0,0.9)",
+                titleFontSize=18,
+                titleFontWeight="bold",
+                titlePadding=34,
+                labelColor="rgba(0,0,0,0.65)",
+                labelFontSize=12,
+            ),
+        ),
+        tooltip=[],
     )
 
-    circles = alt.Chart(df).mark_circle(size=800, opacity=0.10).encode(
-        x=x_axis,
-        y=y_axis,
+    # Faded region labels (behind matchups).
+    region_labels_df = pd.DataFrame(
+        [
+            {"label": "Amazing game", "x": 0.86, "y": 0.92},
+            {"label": "Great game", "x": 0.72, "y": 0.80},
+            {"label": "Good game", "x": 0.60, "y": 0.60},
+            {"label": "Ok game", "x": 0.45, "y": 0.38},
+            {"label": "Crap game", "x": 0.25, "y": 0.22},
+        ]
+    )
+    region_text = alt.Chart(region_labels_df).mark_text(
+        fontSize=28,
+        fontWeight=700,
+        opacity=0.15,
+        color="rgba(49,51,63,0.75)",
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("label:N"),
+        tooltip=[],
+    )
+
+    # In-plot axis label fallback (keeps labels visible even if Vega-Lite hides axis titles).
+    axis_labels_df = pd.DataFrame(
+        [
+            {"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.01, "angle": 0},
+            {"text": "Closeness", "x": QUALITY_FLOOR + 0.01, "y": 0.55, "angle": -90},
+        ]
+    )
+    axis_label_text = alt.Chart(axis_labels_df).mark_text(
+        fontSize=18,
+        fontWeight=700,
+        opacity=0.85,
+        color="rgba(0,0,0,0.85)",
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("text:N"),
+        angle=alt.Angle("angle:Q"),
+        tooltip=[],
+    )
+
+    circles = alt.Chart(df_plot).mark_circle(size=800, opacity=0.10).encode(
+        x=alt.X("Team quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("Closeness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         color=alt.Color(
             "Region:N",
             sort=region_order,
@@ -210,8 +386,8 @@ with left:
     )
 
     dx = 0.03
-    away_points = df.assign(_x=(df["Team quality"] - dx).clip(0, 1), _logo=df["Away logo"])
-    home_points = df.assign(_x=(df["Team quality"] + dx).clip(0, 1), _logo=df["Home logo"])
+    away_points = df_plot.assign(_x=(df_plot["Team quality"] - dx).clip(0, 1), _logo=df_plot["Away logo"])
+    home_points = df_plot.assign(_x=(df_plot["Team quality"] + dx).clip(0, 1), _logo=df_plot["Home logo"])
     images_df = pd.concat(
         [
             away_points[["Matchup", "Tip short", "Tip (PT)", "Home spread", "Win% (away)", "Win% (home)", "aWI", "Region", "Closeness", "Team quality", "_x", "_logo"]].assign(_side="away"),
@@ -230,16 +406,36 @@ with left:
             alt.Tooltip("aWI:Q", format=".1f"),
             alt.Tooltip("Region:N"),
             alt.Tooltip("Tip (PT):N"),
+            alt.Tooltip("Home spread:Q"),
+            alt.Tooltip("Win% (away):Q"),
+            alt.Tooltip("Win% (home):Q"),
         ],
     )
 
-    tips = alt.Chart(df).mark_text(dy=32, fontSize=11, color="rgba(49,51,63,0.75)").encode(
+    tips = alt.Chart(df_plot).mark_text(dy=32, fontSize=11, color="rgba(49,51,63,0.75)").encode(
         x=alt.X("Team quality:Q", axis=None),
         y=alt.Y("Closeness:Q", axis=None),
-        text=alt.Text("Tip short:N"),
+        text=alt.Text("Tip display:N"),
+        tooltip=[
+            alt.Tooltip("Matchup:N"),
+            alt.Tooltip("aWI:Q", format=".1f"),
+            alt.Tooltip("Region:N"),
+            alt.Tooltip("Tip (PT):N"),
+            alt.Tooltip("Home spread:Q"),
+            alt.Tooltip("Win% (away):Q"),
+            alt.Tooltip("Win% (home):Q"),
+        ],
     )
 
-    chart = (regions + circles + images + tips).resolve_scale(x="shared", y="shared").properties(height=560)
+    chart = (
+        axes
+        + regions
+        + region_text
+        + axis_label_text
+        + circles
+        + images
+        + tips
+    ).resolve_scale(x="shared", y="shared").properties(height=560)
     st.altair_chart(chart, use_container_width=True)
 
 with right:
@@ -248,6 +444,16 @@ with right:
     def _render_menu_row(r) -> str:
         awi_score = int(round(float(r["aWI"])))
         label = py_html.escape(str(r["Region"]))
+        live_badge = ""
+        if bool(r.get("Is live", False)):
+            away_s = r.get("Away score")
+            home_s = r.get("Home score")
+            tr = r.get("Time remaining")
+            tr_part = f" • {py_html.escape(str(tr))}" if tr else ""
+            if away_s is not None and home_s is not None:
+                live_badge = f"<div class='live-badge'>🚨 LIVE {int(away_s)} - {int(home_s)}{tr_part}</div>"
+            else:
+                live_badge = f"<div class='live-badge'>🚨 LIVE{tr_part}</div>"
         away = py_html.escape(str(r["Away team"]))
         home = py_html.escape(str(r["Home team"]))
         tip = py_html.escape(str(r["Tip (PT)"]))
@@ -265,6 +471,7 @@ with right:
   <div class="menu-awi">
     <div class="score">{awi_score} aWI</div>
     <div class="label">{label}</div>
+    {live_badge}
   </div>
   <div class="menu-teams">
     <div class="team">
@@ -285,8 +492,17 @@ with right:
 </div>
 """
 
-    for _, row in df.iterrows():
-        st.markdown(_render_menu_row(row), unsafe_allow_html=True)
+    if date_options:
+        for local_date, day_name in df_dates.itertuples(index=False, name=None):
+            st.markdown(f"**{py_html.escape(str(day_name))}**")
+            st.divider()
+            day_df = df[df["Local date"] == local_date].sort_values("aWI", ascending=False)
+            for _, row in day_df.iterrows():
+                st.markdown(_render_menu_row(row), unsafe_allow_html=True)
+            st.divider()
+    else:
+        for _, row in df.iterrows():
+            st.markdown(_render_menu_row(row), unsafe_allow_html=True)
 
 st.divider()
 last_updated = dt.datetime.now(
