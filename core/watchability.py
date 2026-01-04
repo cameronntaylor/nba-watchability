@@ -7,8 +7,10 @@ from typing import Optional
 
 QUALITY_MULTIPLIER = 1
 CLOSENESS_MULTIPLIER = 1
-MAX_EXPECTED_WIN_PCT = (0.8)**QUALITY_MULTIPLIER
-SPREAD_CAP = 15.0
+MAX_EXPECTED_WIN_PCT = (1.0)**QUALITY_MULTIPLIER
+SPREAD_CAP = 12.0
+WIN_MAX = 0.8
+WIN_MIN = 0.2
 
 QUALITY_FLOOR = 0.1
 CLOSENESS_FLOOR = 0.1
@@ -27,6 +29,8 @@ def team_quality(
     max_expected: float = MAX_EXPECTED_WIN_PCT,
     floor: float = QUALITY_FLOOR,
     quality_multiplier: float = QUALITY_MULTIPLIER,
+    win_max: float = WIN_MAX,
+    win_min: float = WIN_MIN,
 ) -> float:
     """
     Team quality for a matchup, normalized to ~[0,1].
@@ -35,7 +39,7 @@ def team_quality(
     if max_expected <= 0:
         return float(floor)
     avg_wp = 0.5 * (float(w1) + float(w2))
-    return _clamp01_floor(avg_wp**(quality_multiplier) / float(max_expected), floor=floor)
+    return _clamp01_floor((avg_wp - win_min) / (win_max - win_min), floor=floor)
 
 
 def closeness(
