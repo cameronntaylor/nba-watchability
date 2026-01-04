@@ -19,7 +19,7 @@ TEAM_ABBR = {
     "miami heat": "MIA",
     "milwaukee bucks": "MIL",
     "minnesota timberwolves": "MIN",
-    "new orleans pelicans": "NOP",
+    "new orleans pelicans": "NO",
     "new york knicks": "NYK",
     "oklahoma city thunder": "OKC",
     "orlando magic": "ORL",
@@ -29,7 +29,7 @@ TEAM_ABBR = {
     "sacramento kings": "SAC",
     "san antonio spurs": "SAS",
     "toronto raptors": "TOR",
-    "utah jazz": "UTA",
+    "utah jazz": "UTAH",
     "washington wizards": "WAS",
 }
 
