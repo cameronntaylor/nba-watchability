@@ -5,7 +5,7 @@ from typing import Literal, Optional
 
 FVariant = Literal["avg", "product", "max"]
 
-MAX_EXPECTED_WIN_PCT = 0.8
+MAX_EXPECTED_WIN_PCT = 0.85
 
 @dataclass
 class MetricParams:
