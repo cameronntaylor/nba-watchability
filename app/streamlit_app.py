@@ -66,7 +66,7 @@ st.title(
     "What to watch? NBA Watchability Today"
 )
 
-@st.cache_data(ttl=60 * 10)  # 10 min
+@st.cache_data(ttl=60 * 5)  # 5 min
 def load_games():
     return fetch_nba_spreads_window(days_ahead=2)
 
@@ -83,13 +83,14 @@ def _parse_score(x):
         return None
 
 
-@st.cache_data(ttl=60)  # 1 min (live scores)
+@st.cache_data(ttl=60 * 10)  # 10 min (live scores)
 def load_espn_game_map(local_dates_iso: tuple[str, ...]) -> dict[tuple[str, str, str], dict]:
     """
     Map (date_iso, home_team_lower, away_team_lower) -> dict with:
       - state ('pre'/'in'/'post')
       - home_score (int|None)
       - away_score (int|None)
+      - time_remaining (str|None) e.g. '5:32 Q3'
     """
     out: dict[tuple[str, str, str], dict] = {}
     for iso in local_dates_iso:
@@ -105,11 +106,13 @@ def load_espn_game_map(local_dates_iso: tuple[str, ...]) -> dict[tuple[str, str,
             state = str(g.get("state", ""))
             home_score = _parse_score(g.get("home_score"))
             away_score = _parse_score(g.get("away_score"))
+            time_remaining = g.get("time_remaining")
             if home and away and state:
                 out[(iso, home, away)] = {
                     "state": state,
                     "home_score": home_score,
                     "away_score": away_score,
+                    "time_remaining": time_remaining,
                 }
     return out
 
@@ -203,21 +206,27 @@ if date_options:
     df["Status"] = df.apply(lambda r: _lookup_game(r, "state") or "pre", axis=1)
     df["Away score"] = df.apply(lambda r: _lookup_game(r, "away_score"), axis=1)
     df["Home score"] = df.apply(lambda r: _lookup_game(r, "home_score"), axis=1)
+    df["Time remaining"] = df.apply(lambda r: _lookup_game(r, "time_remaining"), axis=1)
 else:
     df["Status"] = "pre"
     df["Away score"] = None
     df["Home score"] = None
+    df["Time remaining"] = None
 df["Is live"] = df["Status"] == "in"
 def _tip_display(r) -> str:
     if not bool(r["Is live"]):
         return str(r["Tip short"])
     away = r.get("Away score")
     home = r.get("Home score")
+    tr = r.get("Time remaining")
     if away is None or home is None:
-        return "🚨 LIVE"
-    return f"🚨 {int(away)}-{int(home)}"
+        return f"🚨 LIVE{(' ' + str(tr)) if tr else ''}"
+    return f"🚨 {int(away)}-{int(home)}{(' ' + str(tr)) if tr else ''}"
 
 df["Tip display"] = df.apply(_tip_display, axis=1)
+
+# Remove finished games from both views.
+df = df[df["Status"] != "post"].copy()
 
 left, right = st.columns([1.05, 1.0], gap="large")
 
@@ -279,22 +288,86 @@ with left:
             scale=alt.Scale(domain=region_order, range=[region_colors[r] for r in region_order]),
             legend=None,
         ),
+        tooltip=[],
     )
 
-    x_axis = alt.X(
-        "Team quality:Q",
-        scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]),
-        axis=alt.Axis(title="Team Quality", format=".2f"),
+    axes = alt.Chart(df_plot).mark_point(opacity=0).encode(
+        x=alt.X(
+            "Team quality:Q",
+            scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]),
+            axis=alt.Axis(
+                title="Team Quality",
+                format=".2f",
+                titleColor="rgba(0,0,0,0.9)",
+                titleFontSize=18,
+                titleFontWeight="bold",
+                titlePadding=28,
+                labelColor="rgba(0,0,0,0.65)",
+                labelFontSize=12,
+            ),
+        ),
+        y=alt.Y(
+            "Closeness:Q",
+            scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]),
+            axis=alt.Axis(
+                title="Closeness",
+                format=".2f",
+                titleColor="rgba(0,0,0,0.9)",
+                titleFontSize=18,
+                titleFontWeight="bold",
+                titlePadding=34,
+                labelColor="rgba(0,0,0,0.65)",
+                labelFontSize=12,
+            ),
+        ),
+        tooltip=[],
     )
-    y_axis = alt.Y(
-        "Closeness:Q",
-        scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]),
-        axis=alt.Axis(title="Closeness", format=".2f"),
+
+    # Faded region labels (behind matchups).
+    region_labels_df = pd.DataFrame(
+        [
+            {"label": "Amazing game", "x": 0.86, "y": 0.92},
+            {"label": "Great game", "x": 0.72, "y": 0.80},
+            {"label": "Good game", "x": 0.60, "y": 0.60},
+            {"label": "Ok game", "x": 0.45, "y": 0.38},
+            {"label": "Crap game", "x": 0.25, "y": 0.22},
+        ]
+    )
+    region_text = alt.Chart(region_labels_df).mark_text(
+        fontSize=28,
+        fontWeight=700,
+        opacity=0.15,
+        color="rgba(49,51,63,0.75)",
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("label:N"),
+        tooltip=[],
+    )
+
+    # In-plot axis label fallback (keeps labels visible even if Vega-Lite hides axis titles).
+    axis_labels_df = pd.DataFrame(
+        [
+            {"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.01, "angle": 0},
+            {"text": "Closeness", "x": QUALITY_FLOOR + 0.01, "y": 0.55, "angle": -90},
+        ]
+    )
+    axis_label_text = alt.Chart(axis_labels_df).mark_text(
+        fontSize=18,
+        fontWeight=700,
+        opacity=0.85,
+        color="rgba(0,0,0,0.85)",
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("text:N"),
+        angle=alt.Angle("angle:Q"),
+        tooltip=[],
     )
 
     circles = alt.Chart(df_plot).mark_circle(size=800, opacity=0.10).encode(
-        x=x_axis,
-        y=y_axis,
+        x=alt.X("Team quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("Closeness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         color=alt.Color(
             "Region:N",
             sort=region_order,
@@ -333,6 +406,9 @@ with left:
             alt.Tooltip("aWI:Q", format=".1f"),
             alt.Tooltip("Region:N"),
             alt.Tooltip("Tip (PT):N"),
+            alt.Tooltip("Home spread:Q"),
+            alt.Tooltip("Win% (away):Q"),
+            alt.Tooltip("Win% (home):Q"),
         ],
     )
 
@@ -340,9 +416,26 @@ with left:
         x=alt.X("Team quality:Q", axis=None),
         y=alt.Y("Closeness:Q", axis=None),
         text=alt.Text("Tip display:N"),
+        tooltip=[
+            alt.Tooltip("Matchup:N"),
+            alt.Tooltip("aWI:Q", format=".1f"),
+            alt.Tooltip("Region:N"),
+            alt.Tooltip("Tip (PT):N"),
+            alt.Tooltip("Home spread:Q"),
+            alt.Tooltip("Win% (away):Q"),
+            alt.Tooltip("Win% (home):Q"),
+        ],
     )
 
-    chart = (regions + circles + images + tips).resolve_scale(x="shared", y="shared").properties(height=560)
+    chart = (
+        axes
+        + regions
+        + region_text
+        + axis_label_text
+        + circles
+        + images
+        + tips
+    ).resolve_scale(x="shared", y="shared").properties(height=560)
     st.altair_chart(chart, use_container_width=True)
 
 with right:
@@ -355,10 +448,12 @@ with right:
         if bool(r.get("Is live", False)):
             away_s = r.get("Away score")
             home_s = r.get("Home score")
+            tr = r.get("Time remaining")
+            tr_part = f" • {py_html.escape(str(tr))}" if tr else ""
             if away_s is not None and home_s is not None:
-                live_badge = f"<div class='live-badge'>🚨 LIVE {int(away_s)} - {int(home_s)}</div>"
+                live_badge = f"<div class='live-badge'>🚨 LIVE {int(away_s)} - {int(home_s)}{tr_part}</div>"
             else:
-                live_badge = "<div class='live-badge'>🚨 LIVE</div>"
+                live_badge = f"<div class='live-badge'>🚨 LIVE{tr_part}</div>"
         away = py_html.escape(str(r["Away team"]))
         home = py_html.escape(str(r["Home team"]))
         tip = py_html.escape(str(r["Tip (PT)"]))
