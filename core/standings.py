@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import re
 
 def _normalize_team_name(name: str) -> str:
@@ -44,3 +44,12 @@ def fetch_team_win_pct_map() -> Dict[str, float]:
 def get_win_pct(team_name: str, winpct_map: Dict[str, float], default: float = 0.5) -> float:
     key = _normalize_team_name(team_name)
     return float(winpct_map.get(key, default))
+
+
+def get_record(
+    team_name: str,
+    record_map: Dict[str, Tuple[int, int]],
+    default: Tuple[Optional[int], Optional[int]] = (None, None),
+) -> Tuple[Optional[int], Optional[int]]:
+    key = _normalize_team_name(team_name)
+    return record_map.get(key, default)  # type: ignore[return-value]

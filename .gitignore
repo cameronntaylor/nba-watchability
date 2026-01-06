@@ -5,6 +5,8 @@
 __pycache__/
 *.pyc
 core/__pycache__/
+core/*.pyc
+core/__pycache__/*.pyc
 
 # Streamlit
 .streamlit/
