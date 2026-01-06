@@ -16,8 +16,8 @@ from dateutil import parser as dtparser
 import datetime as dt
 from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
-from core.standings import get_win_pct
-from core.standings_espn import fetch_team_win_pct_map
+from core.standings import get_win_pct, get_record
+from core.standings_espn import fetch_team_standings_maps
 from core.team_meta import get_logo_url
 import core.watchability as watch
 
@@ -65,6 +65,14 @@ html(
 st.title(
     "What to watch? NBA Watchability Today"
 )
+st.caption(
+    "Average Watchability Index (aWI) quantifies the watchability of an NBA game by combining "
+    "the expected competitiveness and quality of teams playing to predict the overall quality and watchability "
+    "of the basketball being played. Future versions of the metric will let users personalize based on their "
+    "preferences over competitiveness and team and player quality. aWI also updates during live games accounting "
+    "for the evolving competitiveness of the game. aWI is broken into Amazing, Great, Good, Ok, and Crap "
+    "buckets to help users understand and contextualize the relative watchability of games."
+)
 
 @st.cache_data(ttl=60 * 5)  # 5 min
 def load_games():
@@ -72,7 +80,7 @@ def load_games():
 
 @st.cache_data(ttl=60 * 60)  # 1 hour
 def load_standings():
-    return fetch_team_win_pct_map()
+    return fetch_team_standings_maps()
 
 def _parse_score(x):
     try:
@@ -117,7 +125,7 @@ def load_espn_game_map(local_dates_iso: tuple[str, ...]) -> dict[tuple[str, str,
     return out
 
 games = load_games()
-winpct_map = load_standings()
+winpct_map, record_map = load_standings()
 if not winpct_map:
     st.warning(
         "Could not load standings from ESPN; win% will default to 0.5. "
@@ -130,6 +138,10 @@ rows = []
 for g in games:
     w_home = get_win_pct(g.home_team, winpct_map, default=0.5)
     w_away = get_win_pct(g.away_team, winpct_map, default=0.5)
+    w_home_rec, l_home_rec = get_record(g.home_team, record_map)
+    w_away_rec, l_away_rec = get_record(g.away_team, record_map)
+    home_record = "—" if (w_home_rec is None or l_home_rec is None) else f"{w_home_rec}-{l_home_rec}"
+    away_record = "—" if (w_away_rec is None or l_away_rec is None) else f"{w_away_rec}-{l_away_rec}"
 
     abs_spread = None if g.home_spread is None else abs(float(g.home_spread))
     w = watch.compute_watchability(w_home, w_away, abs_spread)
@@ -160,8 +172,8 @@ for g in games:
         "Home logo": get_logo_url(g.home_team) or "",
         "Home spread": g.home_spread,
         "|spread|": abs_spread,
-        "Win% (away)": round(w_away, 3),
-        "Win% (home)": round(w_home, 3),
+        "Record (away)": away_record,
+        "Record (home)": home_record,
         "Team quality": w.team_quality,
         "Closeness": w.closeness,
         "Uavg": w.uavg,
@@ -310,7 +322,7 @@ with left:
             "Closeness:Q",
             scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]),
             axis=alt.Axis(
-                title="Closeness",
+                title="Competitiveness",
                 format=".2f",
                 titleColor="rgba(0,0,0,0.9)",
                 titleFontSize=18,
@@ -327,7 +339,7 @@ with left:
     region_labels_df = pd.DataFrame(
         [
             {"label": "Amazing game", "x": 0.86, "y": 0.92},
-            {"label": "Great game", "x": 0.72, "y": 0.80},
+            {"label": "Great game", "x": 0.75, "y": 0.80},
             {"label": "Good game", "x": 0.60, "y": 0.60},
             {"label": "Ok game", "x": 0.45, "y": 0.38},
             {"label": "Crap game", "x": 0.25, "y": 0.22},
@@ -346,24 +358,48 @@ with left:
     )
 
     # In-plot axis label fallback (keeps labels visible even if Vega-Lite hides axis titles).
-    axis_labels_df = pd.DataFrame(
-        [
-            {"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.01, "angle": 0},
-            {"text": "Closeness", "x": QUALITY_FLOOR + 0.01, "y": 0.55, "angle": -90},
-        ]
+    x_axis_label_df = pd.DataFrame(
+        [{"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
     )
-    axis_label_text = alt.Chart(axis_labels_df).mark_text(
-        fontSize=18,
-        fontWeight=700,
-        opacity=0.85,
-        color="rgba(0,0,0,0.85)",
+    x_axis_label_text = alt.Chart(x_axis_label_df).mark_text(
+        dy=64,
+        fontSize=22,
+        fontWeight=800,
+        opacity=0.95,
+        color="rgba(0,0,0,0.9)",
     ).encode(
         x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
         y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         text=alt.Text("text:N"),
-        angle=alt.Angle("angle:Q"),
         tooltip=[],
     )
+
+    y_axis_label_df = pd.DataFrame(
+        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.03, "y": 0.65}]
+    )
+    y_axis_label_text = alt.Chart(y_axis_label_df).mark_text(
+        dx=-74,
+        fontSize=22,
+        fontWeight=800,
+        opacity=0.95,
+        color="rgba(0,0,0,0.9)",
+        angle=270,
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("text:N"),
+        tooltip=[],
+    )
+
+    game_tooltip = [
+        alt.Tooltip("Matchup:N"),
+        alt.Tooltip("aWI:Q", format=".1f"),
+        alt.Tooltip("Region:N"),
+        alt.Tooltip("Tip (PT):N"),
+        alt.Tooltip("Home spread:Q"),
+        alt.Tooltip("Record (away):N"),
+        alt.Tooltip("Record (home):N"),
+    ]
 
     circles = alt.Chart(df_plot).mark_circle(size=800, opacity=0.10).encode(
         x=alt.X("Team quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
@@ -374,15 +410,14 @@ with left:
             scale=alt.Scale(domain=region_order, range=[region_colors[r] for r in region_order]),
             legend=alt.Legend(title=None),
         ),
-        tooltip=[
-            alt.Tooltip("Matchup:N"),
-            alt.Tooltip("aWI:Q", format=".1f"),
-            alt.Tooltip("Region:N"),
-            alt.Tooltip("Tip (PT):N"),
-            alt.Tooltip("Home spread:Q"),
-            alt.Tooltip("Win% (away):Q"),
-            alt.Tooltip("Win% (home):Q"),
-        ],
+        tooltip=game_tooltip,
+    )
+
+    # Larger (invisible) tap/hover target to make interaction easier on mobile.
+    hit_targets = alt.Chart(df_plot).mark_circle(size=4200, opacity=0.001).encode(
+        x=alt.X("Team quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("Closeness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        tooltip=game_tooltip,
     )
 
     dx = 0.03
@@ -390,8 +425,8 @@ with left:
     home_points = df_plot.assign(_x=(df_plot["Team quality"] + dx).clip(0, 1), _logo=df_plot["Home logo"])
     images_df = pd.concat(
         [
-            away_points[["Matchup", "Tip short", "Tip (PT)", "Home spread", "Win% (away)", "Win% (home)", "aWI", "Region", "Closeness", "Team quality", "_x", "_logo"]].assign(_side="away"),
-            home_points[["Matchup", "Tip short", "Tip (PT)", "Home spread", "Win% (away)", "Win% (home)", "aWI", "Region", "Closeness", "Team quality", "_x", "_logo"]].assign(_side="home"),
+            away_points[["Matchup", "Tip short", "Tip (PT)", "Home spread", "Record (away)", "Record (home)", "aWI", "Region", "Closeness", "Team quality", "_x", "_logo"]].assign(_side="away"),
+            home_points[["Matchup", "Tip short", "Tip (PT)", "Home spread", "Record (away)", "Record (home)", "aWI", "Region", "Closeness", "Team quality", "_x", "_logo"]].assign(_side="home"),
         ],
         ignore_index=True,
     )
@@ -401,38 +436,24 @@ with left:
         x=alt.X("_x:Q", axis=None),
         y=alt.Y("Closeness:Q", axis=None),
         url=alt.Url("_logo:N"),
-        tooltip=[
-            alt.Tooltip("Matchup:N"),
-            alt.Tooltip("aWI:Q", format=".1f"),
-            alt.Tooltip("Region:N"),
-            alt.Tooltip("Tip (PT):N"),
-            alt.Tooltip("Home spread:Q"),
-            alt.Tooltip("Win% (away):Q"),
-            alt.Tooltip("Win% (home):Q"),
-        ],
+        tooltip=game_tooltip,
     )
 
     tips = alt.Chart(df_plot).mark_text(dy=32, fontSize=11, color="rgba(49,51,63,0.75)").encode(
         x=alt.X("Team quality:Q", axis=None),
         y=alt.Y("Closeness:Q", axis=None),
         text=alt.Text("Tip display:N"),
-        tooltip=[
-            alt.Tooltip("Matchup:N"),
-            alt.Tooltip("aWI:Q", format=".1f"),
-            alt.Tooltip("Region:N"),
-            alt.Tooltip("Tip (PT):N"),
-            alt.Tooltip("Home spread:Q"),
-            alt.Tooltip("Win% (away):Q"),
-            alt.Tooltip("Win% (home):Q"),
-        ],
+        tooltip=game_tooltip,
     )
 
     chart = (
         axes
         + regions
         + region_text
-        + axis_label_text
+        + x_axis_label_text
+        + y_axis_label_text
         + circles
+        + hit_targets
         + images
         + tips
     ).resolve_scale(x="shared", y="shared").properties(height=560)
@@ -459,8 +480,8 @@ with right:
         tip = py_html.escape(str(r["Tip (PT)"]))
         spread = r["Home spread"]
         spread_str = "?" if spread is None else f"{float(spread):g}"
-        win_away = float(r["Win% (away)"])
-        win_home = float(r["Win% (home)"])
+        record_away = py_html.escape(str(r.get("Record (away)", "—")))
+        record_home = py_html.escape(str(r.get("Record (home)", "—")))
         away_logo = py_html.escape(str(r["Away logo"]))
         home_logo = py_html.escape(str(r["Home logo"]))
         away_img = f"<img src='{away_logo}'/>" if away_logo else ""
@@ -487,7 +508,7 @@ with right:
   <div class="menu-meta">
     <div>Tip: {tip}</div>
     <div>Spread: {spread_str}</div>
-    <div>Win%: {win_away:.3f} vs {win_home:.3f}</div>
+    <div>Record: {record_away} vs {record_home}</div>
   </div>
 </div>
 """
