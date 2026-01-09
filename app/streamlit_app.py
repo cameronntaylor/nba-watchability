@@ -70,7 +70,7 @@ st.caption(
     "the expected competitiveness and quality of teams playing to predict the overall quality and watchability "
     "of the basketball being played. Future versions of the metric will let users personalize based on their "
     "preferences over competitiveness and team and player quality. aWI also updates during live games accounting "
-    "for the evolving competitiveness of the game. aWI is broken into Amazing, Great, Good, Ok, and Crap "
+    "for the evolving competitiveness of the game. aWI goes from 0 to 100 and is broken into Amazing, Great, Good, Ok, and Crap "
     "buckets to help users understand and contextualize the relative watchability of games."
 )
 
