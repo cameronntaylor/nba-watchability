@@ -37,7 +37,8 @@ st.markdown(
 .menu-awi {width:110px;}
 .menu-awi .score {font-size: 24px; font-weight: 700; line-height: 1.05;}
 .menu-awi .label {font-size: 12px; color: rgba(49,51,63,0.7); line-height: 1.2;}
-.live-badge {color: #d62728; font-weight: 700; margin-left: 6px;}
+.live-badge {color: #d62728; font-weight: 700; font-size: 11px; margin-top: 2px;}
+.live-time {color: #d62728; font-size: 11px; line-height: 1.1; margin-top: 2px;}
 .menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 280px;}
 .menu-teams .team {display:flex; align-items:center; gap:8px; min-width: 0;}
 .menu-teams img {width: 28px; height: 28px;}
@@ -470,11 +471,14 @@ with right:
             away_s = r.get("Away score")
             home_s = r.get("Home score")
             tr = r.get("Time remaining")
-            tr_part = f" • {py_html.escape(str(tr))}" if tr else ""
+            tr_line = f"<div class='live-time'>🚨 LIVE {py_html.escape(str(tr))}</div>" if tr else "<div class='live-time'>🚨 LIVE</div>"
             if away_s is not None and home_s is not None:
-                live_badge = f"<div class='live-badge'>🚨 LIVE {int(away_s)} - {int(home_s)}{tr_part}</div>"
+                live_badge = (
+                    f"{tr_line}"
+                    f"<div class='live-badge'>{int(away_s)} - {int(home_s)}</div>"
+                )
             else:
-                live_badge = f"<div class='live-badge'>🚨 LIVE{tr_part}</div>"
+                live_badge = f"{tr_line}"
         away = py_html.escape(str(r["Away team"]))
         home = py_html.escape(str(r["Home team"]))
         tip = py_html.escape(str(r["Tip (PT)"]))
