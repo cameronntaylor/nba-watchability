@@ -36,9 +36,9 @@ st.markdown(
 .menu-row {display:flex; align-items:center; gap:12px; padding:8px 4px; border-bottom: 1px solid rgba(49,51,63,0.12);}
 .menu-awi {width:110px;}
 .menu-awi .score {font-size: 24px; font-weight: 700; line-height: 1.05;}
-.menu-awi .label {font-size: 12px; color: rgba(49,51,63,0.7); line-height: 1.2;}
-.live-badge {color: #d62728; font-weight: 700; font-size: 11px; margin-top: 2px;}
-.live-time {color: #d62728; font-size: 11px; line-height: 1.1; margin-top: 2px;}
+.menu-awi .label {font-size: 14px; color: rgba(49,51,63,0.7); line-height: 1.2;}
+.live-badge {color: #d62728; font-weight: 700; font-size: 13px; margin-top: 2px;}
+.live-time {color: #d62728; font-size: 13px; line-height: 1.1; margin-top: 2px;}
 .menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 280px;}
 .menu-teams .team {display:flex; align-items:center; gap:8px; min-width: 0;}
 .menu-teams img {width: 28px; height: 28px;}
