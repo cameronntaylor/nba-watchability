@@ -1,4 +1,4 @@
-name: NBA Watchability Bot (TEST)
+name: NBA Watchability Bot
 
 on:
   workflow_dispatch:  # manual trigger only
@@ -10,7 +10,7 @@ jobs:
     env:
       # SAFETY FLAGS
       USE_PLAYWRIGHT: "true"
-      DRY_RUN: "true"
+      DRY_RUN: "false"
 
       # API keys (already stored as repo secrets)
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
@@ -38,7 +38,7 @@ jobs:
       - name: Install Playwright browser
         run: python -m playwright install chromium
 
-      - name: Run bot (dry run; no tweet just text and image download)
+      - name: Run bot and post tweet
         run: python scripts/run_bot.py
 
       - name: Upload screenshot artifact
