@@ -29,14 +29,11 @@ def capture_dashboard():
 
         page.goto(DASHBOARD_URL, timeout=60_000)
 
-        # Wait for a stable element
-        page.wait_for_selector("#dashboard-root", timeout=60_000)
-        time.sleep(8)
+        # Wait until Streamlit finishes loading data + charts
+        page.wait_for_load_state("networkidle", timeout=60_000)
+        time.sleep(6)  # extra buffer for Altair rendering
 
-        page.screenshot(
-            path=str(OUT_PATH),
-            full_page=False
-        )
+        page.screenshot(path=str(OUT_PATH), full_page=False)
 
         browser.close()
 
