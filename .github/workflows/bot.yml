@@ -4,7 +4,7 @@ on:
   workflow_dispatch:  # manual trigger (keep this!)
   
   schedule:
-    # Mon–Fri at 3:00 PM PT (23:00 UTC)
+    # Mon–Fri at 12:00 PM PT (20:00 UTC)
     - cron: "0 20 * * 1-5"
 
     # Sat–Sun at 10:00 AM PT (18:00 UTC)
