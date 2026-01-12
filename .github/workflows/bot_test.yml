@@ -1,4 +1,4 @@
-name: NBA Watchability Bot (TEST ONLY)
+name: NBA Watchability Bot
 
 on:
   workflow_dispatch:  # manual trigger only
