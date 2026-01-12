@@ -5,7 +5,7 @@ def compose_tweet_text():
 
     return (
         f"🏀 NBA Watchability — {today}\n\n"
-        "What to watch tonight, ranked by the average Watchability Index which incorporates:\n"
+        "What to watch tonight, ranked by the Watchability Index which combines:\n"
         "• competitiveness\n"
         "• team quality\n"
     )
