@@ -29,6 +29,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+st.markdown('<div id="dashboard-root"></div>', unsafe_allow_html=True)
+
 st.markdown(
     """
 <style>
