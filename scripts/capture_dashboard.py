@@ -7,10 +7,10 @@ DASHBOARD_URL = "https://nba-watchability.streamlit.app/?mode=twitter"
 OUT_DIR = Path("output")
 FULL_IMG = OUT_DIR / "full.png"
 CROPPED_IMG = OUT_DIR / "dashboard.png"
-LEFT_PAD = 70
-TOP_PAD = 500     # 👈 cut off header / tabs
-RIGHT_PAD = 1000      # 👈 cut off right column
-BOTTOM_PAD = 200      # optional
+LEFT_PAD = 100
+TOP_PAD = 750     # 👈 cut off header / tabs
+RIGHT_PAD = 1250      # 👈 cut off right column
+BOTTOM_PAD = 250      # optional
 
 def capture_dashboard():
     print("Starting screenshot capture...")
