@@ -16,3 +16,6 @@ data/
 
 # Local testing
 run_local.sh
+
+# Output
+output/
