@@ -1,0 +1,49 @@
+name: NBA Watchability Bot (TEST ONLY)
+
+on:
+  workflow_dispatch:  # manual trigger only
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    env:
+      # SAFETY FLAGS
+      USE_PLAYWRIGHT: "true"
+      DRY_RUN: "true"
+
+      # API keys (already stored as repo secrets)
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+
+      TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+      TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
+      TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+      TWITTER_ACCESS_SECRET: ${{ secrets.TWITTER_ACCESS_SECRET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install playwright tweepy python-dotenv
+
+      - name: Install Playwright browser
+        run: python -m playwright install chromium
+
+      - name: Run bot (dry run)
+        run: python scripts/run_bot.py
+
+      - name: Upload screenshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-screenshot
+          path: output/dashboard.png
