@@ -30,10 +30,8 @@ def capture_dashboard():
         page.goto(DASHBOARD_URL, timeout=60_000)
 
         # Wait for a stable element
-        page.wait_for_selector("text=NBA Games-of-the-Day", timeout=60_000)
-
-        # Allow Streamlit to finish rendering
-        time.sleep(4)
+        page.wait_for_selector("#dashboard-root", timeout=60_000)
+        time.sleep(8)
 
         page.screenshot(
             path=str(OUT_PATH),
