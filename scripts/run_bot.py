@@ -1,6 +1,7 @@
 from capture_dashboard import capture_dashboard
 from compose_tweet import compose_tweet_text
 from post_tweet import post_tweet
+import os
 
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
