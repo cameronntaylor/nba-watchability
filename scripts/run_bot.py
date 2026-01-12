@@ -2,7 +2,7 @@ from capture_dashboard import capture_dashboard
 from compose_tweet import compose_tweet_text
 from post_tweet import post_tweet
 
-DRY_RUN = True  # ← flip this when ready
+DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
 def main():
     image_path = capture_dashboard()
