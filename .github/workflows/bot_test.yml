@@ -10,7 +10,7 @@ jobs:
     env:
       # SAFETY FLAGS
       USE_PLAYWRIGHT: "true"
-      DRY_RUN: "true"
+      DRY_RUN: "false"
 
       # API keys (already stored as repo secrets)
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
