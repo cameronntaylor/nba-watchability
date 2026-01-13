@@ -4,11 +4,14 @@ on:
   workflow_dispatch:  # manual trigger (keep this!)
   
   schedule:
-    # Mon–Fri at 12:00 PM PT (20:00 UTC)
-    - cron: "0 20 * * 1-5"
+    # Mon–Fri at 12:00 PM PT
+    # GitHub schedules are UTC and do not support PT DST directly, so we run at both possible UTC hours.
+    - cron: "0 19 * * 1-5"  # 12:00 PDT
+    - cron: "0 20 * * 1-5"  # 12:00 PST
 
-    # Sat–Sun at 10:00 AM PT (18:00 UTC)
-    - cron: "0 18 * * 6,0"
+    # Sat–Sun at 10:00 AM PT
+    - cron: "0 17 * * 6,0"  # 10:00 PDT
+    - cron: "0 18 * * 6,0"  # 10:00 PST
 
 jobs:
   run-bot:
