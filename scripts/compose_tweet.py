@@ -87,7 +87,7 @@ def _avg_wi_summary() -> str | None:
 
     avg_wi = sum(wis) / len(wis)
     label = watch.awi_label(avg_wi).replace(" game", "")
-    return f"Avg WI: {avg_wi:.0f} ({label})"
+    return f"Avg Watchability Index: {avg_wi:.0f} ({label})"
 
 def compose_tweet_text():
     today = date.today().strftime("%b %d")
@@ -101,5 +101,5 @@ def compose_tweet_text():
     if avg_line:
         parts.append(avg_line)
     parts.append("")
-    parts.append("What to watch tonight, ranked by WI (competitiveness + team quality).")
+    parts.append("What to watch tonight, ranked by Watchability Index (WI) (competitiveness + team quality).")
     return "\n".join(parts)
