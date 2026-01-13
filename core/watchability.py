@@ -75,8 +75,8 @@ def uavg(
 
 def awi(team_quality_: float, closeness_: float) -> float:
     """
-    Average Watchability Index (aWI), scaled to [0,100].
-    aWI = 100 * (Uavg - 0) / (1 - 0) = 100 * Uavg
+    Watchability Index (WI), scaled to [0,100].
+    WI = 100 * (Uavg - 0) / (1 - 0) = 100 * Uavg
     """
     return 100.0 * uavg(team_quality_, closeness_)
 

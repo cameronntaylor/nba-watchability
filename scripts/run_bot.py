@@ -6,12 +6,12 @@ import os
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
 def main():
-    image_path = capture_dashboard()
+    image_paths = capture_dashboard()
     tweet_text = compose_tweet_text()
 
     post_tweet(
         text=tweet_text,
-        image_path=image_path,
+        image_paths=image_paths,
         dry_run=DRY_RUN
     )
 

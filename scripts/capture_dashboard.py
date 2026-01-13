@@ -1,16 +1,32 @@
-from playwright.sync_api import sync_playwright
 from pathlib import Path
-from PIL import Image
+import os
 import time
 
-DASHBOARD_URL = "https://nba-watchability.streamlit.app/?mode=twitter"
+from PIL import Image
+from playwright.sync_api import sync_playwright
+
+
+DASHBOARD_URL = os.getenv(
+    "DASHBOARD_URL", "https://nba-watchability.streamlit.app/?mode=twitter"
+)
+
 OUT_DIR = Path("output")
 FULL_IMG = OUT_DIR / "full.png"
-CROPPED_IMG = OUT_DIR / "dashboard.png"
-LEFT_PAD = 125
-TOP_PAD = 760     # 👈 cut off header / tabs
-RIGHT_PAD = 1900      # 👈 cut off right column
-BOTTOM_PAD = 250      # optional
+CHART_IMG = OUT_DIR / "chart.png"
+TABLE_IMG = OUT_DIR / "table.png"
+
+# --- Chart crop (historical defaults) ---
+CHART_LEFT_PAD = int(os.getenv("CHART_LEFT_PAD", "125"))
+CHART_TOP_PAD = int(os.getenv("CHART_TOP_PAD", "775"))
+CHART_RIGHT_PAD = int(os.getenv("CHART_RIGHT_PAD", "1900"))
+CHART_BOTTOM_PAD = int(os.getenv("CHART_BOTTOM_PAD", "250"))
+
+# --- Table crop (tweak as needed) ---
+TABLE_LEFT_PAD = int(os.getenv("TABLE_LEFT_PAD", "2000"))
+TABLE_TOP_PAD = int(os.getenv("TABLE_TOP_PAD", "760"))
+TABLE_RIGHT_PAD = int(os.getenv("TABLE_RIGHT_PAD", "125"))
+TABLE_BOTTOM_PAD = int(os.getenv("TABLE_BOTTOM_PAD", "250"))
+
 
 def capture_dashboard():
     print("Starting screenshot capture...")
@@ -18,10 +34,9 @@ def capture_dashboard():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-
         context = browser.new_context(
             viewport={"width": 1600, "height": 1000},
-            device_scale_factor=2.5,  # 🔥 sharp
+            device_scale_factor=2.5,  # sharp
         )
         page = context.new_page()
 
@@ -32,19 +47,27 @@ def capture_dashboard():
         page.screenshot(path=str(FULL_IMG), full_page=False)
         browser.close()
 
-    # --- Crop left side (chart area) ---
     img = Image.open(FULL_IMG)
     width, height = img.size
 
-    # Crop ~left 58% of screen (tweak if needed)
-    crop_box = (
-        LEFT_PAD,
-        TOP_PAD,
-        width - RIGHT_PAD,
-        height - BOTTOM_PAD,
+    # --- Crop left side (chart area) ---
+    chart_box = (
+        CHART_LEFT_PAD,
+        CHART_TOP_PAD,
+        width - CHART_RIGHT_PAD,
+        height - CHART_BOTTOM_PAD,
     )
-    cropped = img.crop(crop_box)
-    cropped.save(CROPPED_IMG)
+    img.crop(chart_box).save(CHART_IMG)
 
-    print(f"Saved cropped dashboard to {CROPPED_IMG}")
-    return CROPPED_IMG
+    # --- Crop right side (table area) ---
+    table_box = (
+        TABLE_LEFT_PAD,
+        TABLE_TOP_PAD,
+        width - TABLE_RIGHT_PAD,
+        height - TABLE_BOTTOM_PAD,
+    )
+    img.crop(table_box).save(TABLE_IMG)
+
+    print(f"Saved chart screenshot to {CHART_IMG}")
+    print(f"Saved table screenshot to {TABLE_IMG}")
+    return [CHART_IMG, TABLE_IMG]
