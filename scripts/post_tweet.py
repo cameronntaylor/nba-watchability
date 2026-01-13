@@ -1,11 +1,14 @@
 import os
 
-def post_tweet(text, image_path=None, dry_run=True):
+def post_tweet(text, image_path=None, image_paths=None, dry_run=True):
+    if image_paths is None and image_path is not None:
+        image_paths = [image_path]
+
     if dry_run:
         print("DRY RUN — tweet not posted")
         print(text)
-        if image_path:
-            print(f"(would attach image: {image_path})")
+        if image_paths:
+            print(f"(would attach images: {image_paths})")
         return
 
     import tweepy
@@ -20,10 +23,10 @@ def post_tweet(text, image_path=None, dry_run=True):
 
     api_v1 = tweepy.API(auth)
 
-    media_id = None
-    if image_path:
-        media = api_v1.media_upload(image_path)
-        media_id = media.media_id
+    media_ids = []
+    for p in image_paths or []:
+        media = api_v1.media_upload(str(p))
+        media_ids.append(media.media_id)
 
     # --- v2 API (for posting tweet) ---
     client = tweepy.Client(
@@ -33,7 +36,7 @@ def post_tweet(text, image_path=None, dry_run=True):
         access_token_secret=os.environ["TWITTER_ACCESS_SECRET"],
     )
 
-    if media_id:
-        client.create_tweet(text=text, media_ids=[media_id])
+    if media_ids:
+        client.create_tweet(text=text, media_ids=media_ids)
     else:
         client.create_tweet(text=text)
