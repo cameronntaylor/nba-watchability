@@ -25,6 +25,11 @@ def inject_base_css() -> None:
     st.markdown(
         """
 <style>
+/* Hide Streamlit multipage/sidebar nav (cleaner + more professional). */
+section[data-testid="stSidebar"] {display: none;}
+div[data-testid="stSidebarNav"] {display: none;}
+div[data-testid="collapsedControl"] {display: none;}
+
 .block-container {padding-top: 1rem; padding-bottom: 1rem;}
 .menu-row {display:flex; align-items:center; gap:12px; padding:8px 4px; border-bottom: 1px solid rgba(49,51,63,0.12);}
 .menu-awi {width:110px;}
@@ -405,7 +410,7 @@ def render_chart(
 
     game_tooltip = [
         alt.Tooltip("Matchup:N"),
-        alt.Tooltip("aWI:Q", format=".1f"),
+        alt.Tooltip("aWI:Q", title="WI", format=".1f"),
         alt.Tooltip("Region:N"),
         alt.Tooltip("Tip (PT):N"),
         alt.Tooltip("Home spread:Q"),
@@ -535,7 +540,7 @@ def _render_menu_row(r) -> str:
     return f"""
 <div class="menu-row">
   <div class="menu-awi">
-    <div class="score">{awi_score} aWI</div>
+    <div class="score">{awi_score} WI</div>
     <div class="label">{label}</div>
     {live_badge}
   </div>
@@ -612,4 +617,3 @@ def render_table_page() -> None:
     inject_base_css()
     df, df_dates, date_options, _ = build_dashboard_frames()
     render_table(df=df, df_dates=df_dates, date_options=date_options)
-
