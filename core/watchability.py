@@ -91,7 +91,7 @@ def awi_label(awi_: float) -> str:
         return "Good game"
     if x >= 25:
         return "Ok game"
-    return "Crap game"
+    return "Bad game"
 
 
 @dataclass(frozen=True)

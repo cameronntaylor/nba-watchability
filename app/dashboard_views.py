@@ -37,12 +37,17 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-awi .label {font-size: 14px; color: rgba(49,51,63,0.7); line-height: 1.2;}
 .live-badge {color: #d62728; font-weight: 700; font-size: 13px; margin-top: 2px;}
 .live-time {color: #d62728; font-size: 13px; line-height: 1.1; margin-top: 2px;}
-.menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 280px;}
+.menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 240px;}
 .menu-teams .team {display:flex; align-items:center; gap:8px; min-width: 0;}
 .menu-teams img {width: 28px; height: 28px;}
 .menu-teams .name {font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .menu-teams .at {opacity: 0.6; padding: 0 2px;}
-.menu-meta {width: 240px; font-size: 12px; color: rgba(49,51,63,0.75); line-height: 1.25;}
+.menu-matchup {flex: 1; min-width: 0; display:flex; flex-direction: column; gap: 2px;}
+.menu-matchup .teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
+.menu-matchup img {width: 28px; height: 28px;}
+.menu-matchup .name {font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.menu-matchup .record {font-size: 12px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
 </style>
 """,
@@ -279,13 +284,13 @@ def render_chart(
             selected = selected_date if selected_date in date_options else date_options[0]
         df_plot = df[df["Local date"].astype(str) == selected].copy()
 
-    region_order = ["Amazing game", "Great game", "Good game", "Ok game", "Crap game"]
+    region_order = ["Amazing game", "Great game", "Good game", "Ok game", "Bad game"]
     region_colors = {
         "Amazing game": "#1f77b4",
         "Great game": "#2ca02c",
         "Good game": "#ff7f0e",
         "Ok game": "#9467bd",
-        "Crap game": "#7f7f7f",
+        "Bad game": "#7f7f7f",
     }
 
     step = 0.02
@@ -308,19 +313,39 @@ def render_chart(
             )
     regions_df = pd.DataFrame(cells)
 
-    regions = alt.Chart(regions_df).mark_rect(opacity=0.10).encode(
-        x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
-        x2="q2:Q",
-        y=alt.Y("c:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
-        y2="c2:Q",
-        color=alt.Color(
-            "Region:N",
-            sort=region_order,
-            scale=alt.Scale(domain=region_order, range=[region_colors[r] for r in region_order]),
-            legend=None,
-        ),
-        tooltip=[],
+    regions_other = (
+        alt.Chart(regions_df)
+        .transform_filter(alt.datum.Region != "Bad game")
+        .mark_rect(opacity=0.10)
+        .encode(
+            x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+            x2="q2:Q",
+            y=alt.Y("c:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+            y2="c2:Q",
+            color=alt.Color(
+                "Region:N",
+                sort=region_order,
+                scale=alt.Scale(domain=region_order, range=[region_colors[r] for r in region_order]),
+                legend=None,
+            ),
+            tooltip=[],
+        )
     )
+
+    regions_bad = (
+        alt.Chart(regions_df)
+        .transform_filter(alt.datum.Region == "Bad game")
+        .mark_rect(opacity=0.15, color=region_colors["Bad game"])
+        .encode(
+            x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+            x2="q2:Q",
+            y=alt.Y("c:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+            y2="c2:Q",
+            tooltip=[],
+        )
+    )
+
+    regions = regions_other + regions_bad
 
     axes = alt.Chart(df_plot).mark_point(opacity=0).encode(
         x=alt.X(
@@ -356,11 +381,11 @@ def render_chart(
 
     region_labels_df = pd.DataFrame(
         [
-            {"label": "Amazing game", "x": 0.86, "y": 0.92},
-            {"label": "Great game", "x": 0.75, "y": 0.80},
+            {"label": "Amazing", "x": 0.93, "y": 0.93},
+            {"label": "Great game", "x": 0.82, "y": 0.82},
             {"label": "Good game", "x": 0.60, "y": 0.60},
-            {"label": "Ok game", "x": 0.45, "y": 0.38},
-            {"label": "Crap game", "x": 0.25, "y": 0.22},
+            {"label": "Ok game", "x": 0.4, "y": 0.4},
+            {"label": "Bad game", "x": 0.2, "y": 0.2},
         ]
     )
     region_text = alt.Chart(region_labels_df).mark_text(
@@ -379,7 +404,7 @@ def render_chart(
         [{"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
     )
     x_axis_label_text = alt.Chart(x_axis_label_df).mark_text(
-        dy=64,
+        dy=78,
         fontSize=22,
         fontWeight=800,
         opacity=0.95,
@@ -392,7 +417,7 @@ def render_chart(
     )
 
     y_axis_label_df = pd.DataFrame(
-        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.03, "y": 0.65}]
+        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.07, "y": 0.65}]
     )
     y_axis_label_text = alt.Chart(y_axis_label_df).mark_text(
         dx=-74,
@@ -544,21 +569,21 @@ def _render_menu_row(r) -> str:
     <div class="label">{label}</div>
     {live_badge}
   </div>
-  <div class="menu-teams">
-    <div class="team">
+  <div class="menu-matchup">
+    <div class="teamline">
       {away_img}
       <div class="name">{away}</div>
+      <div class="record">{record_away}</div>
     </div>
-    <div class="at">@</div>
-    <div class="team">
+    <div class="teamline">
       {home_img}
       <div class="name">{home}</div>
+      <div class="record">{record_home}</div>
     </div>
   </div>
   <div class="menu-meta">
     <div>Tip: {tip}</div>
     <div>Spread: {spread_str}</div>
-    <div>Record: {record_away} vs {record_home}</div>
   </div>
 </div>
 """
@@ -572,7 +597,7 @@ def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[st
             day_df = df[df["Local date"] == local_date].sort_values("aWI", ascending=False)
             for _, row in day_df.iterrows():
                 st.markdown(_render_menu_row(row), unsafe_allow_html=True)
-            st.divider()
+            st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
     else:
         for _, row in df.iterrows():
             st.markdown(_render_menu_row(row), unsafe_allow_html=True)
