@@ -37,12 +37,17 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-awi .label {font-size: 14px; color: rgba(49,51,63,0.7); line-height: 1.2;}
 .live-badge {color: #d62728; font-weight: 700; font-size: 13px; margin-top: 2px;}
 .live-time {color: #d62728; font-size: 13px; line-height: 1.1; margin-top: 2px;}
-.menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 280px;}
+.menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 240px;}
 .menu-teams .team {display:flex; align-items:center; gap:8px; min-width: 0;}
 .menu-teams img {width: 28px; height: 28px;}
 .menu-teams .name {font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .menu-teams .at {opacity: 0.6; padding: 0 2px;}
-.menu-meta {width: 240px; font-size: 12px; color: rgba(49,51,63,0.75); line-height: 1.25;}
+.menu-matchup {flex: 1; min-width: 0; display:flex; flex-direction: column; gap: 2px;}
+.menu-matchup .teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
+.menu-matchup img {width: 28px; height: 28px;}
+.menu-matchup .name {font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.menu-matchup .record {font-size: 12px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
 </style>
 """,
@@ -379,7 +384,7 @@ def render_chart(
         [{"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
     )
     x_axis_label_text = alt.Chart(x_axis_label_df).mark_text(
-        dy=64,
+        dy=78,
         fontSize=22,
         fontWeight=800,
         opacity=0.95,
@@ -392,7 +397,7 @@ def render_chart(
     )
 
     y_axis_label_df = pd.DataFrame(
-        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.03, "y": 0.65}]
+        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.07, "y": 0.65}]
     )
     y_axis_label_text = alt.Chart(y_axis_label_df).mark_text(
         dx=-74,
@@ -544,21 +549,21 @@ def _render_menu_row(r) -> str:
     <div class="label">{label}</div>
     {live_badge}
   </div>
-  <div class="menu-teams">
-    <div class="team">
+  <div class="menu-matchup">
+    <div class="teamline">
       {away_img}
       <div class="name">{away}</div>
+      <div class="record">{record_away}</div>
     </div>
-    <div class="at">@</div>
-    <div class="team">
+    <div class="teamline">
       {home_img}
       <div class="name">{home}</div>
+      <div class="record">{record_home}</div>
     </div>
   </div>
   <div class="menu-meta">
     <div>Tip: {tip}</div>
     <div>Spread: {spread_str}</div>
-    <div>Record: {record_away} vs {record_home}</div>
   </div>
 </div>
 """
