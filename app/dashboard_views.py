@@ -597,7 +597,7 @@ def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[st
             day_df = df[df["Local date"] == local_date].sort_values("aWI", ascending=False)
             for _, row in day_df.iterrows():
                 st.markdown(_render_menu_row(row), unsafe_allow_html=True)
-            st.divider()
+            st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
     else:
         for _, row in df.iterrows():
             st.markdown(_render_menu_row(row), unsafe_allow_html=True)
