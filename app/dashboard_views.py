@@ -49,6 +49,15 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-matchup .record {font-size: 12px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
 .menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
+
+/* Mobile layout: prevent overlap by stacking meta below matchup. */
+@media (max-width: 640px) {
+  .menu-row {flex-wrap: wrap; align-items: flex-start; gap: 8px 10px;}
+  .menu-awi {width: 92px;}
+  .menu-matchup {min-width: 0; flex: 1 1 calc(100% - 102px);}
+  .menu-meta {width: 100%; padding-left: 92px; font-size: 14px; line-height: 1.35;}
+  .menu-matchup .record {font-size: 11px;}
+}
 </style>
 """,
         unsafe_allow_html=True,
