@@ -284,13 +284,13 @@ def render_chart(
             selected = selected_date if selected_date in date_options else date_options[0]
         df_plot = df[df["Local date"].astype(str) == selected].copy()
 
-    region_order = ["Amazing game", "Great game", "Good game", "Ok game", "Crap game"]
+    region_order = ["Amazing game", "Great game", "Good game", "Ok game", "Bad game"]
     region_colors = {
         "Amazing game": "#1f77b4",
         "Great game": "#2ca02c",
         "Good game": "#ff7f0e",
         "Ok game": "#9467bd",
-        "Crap game": "#7f7f7f",
+        "Bad game": "#7f7f7f",
     }
 
     step = 0.02
@@ -313,19 +313,39 @@ def render_chart(
             )
     regions_df = pd.DataFrame(cells)
 
-    regions = alt.Chart(regions_df).mark_rect(opacity=0.10).encode(
-        x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
-        x2="q2:Q",
-        y=alt.Y("c:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
-        y2="c2:Q",
-        color=alt.Color(
-            "Region:N",
-            sort=region_order,
-            scale=alt.Scale(domain=region_order, range=[region_colors[r] for r in region_order]),
-            legend=None,
-        ),
-        tooltip=[],
+    regions_other = (
+        alt.Chart(regions_df)
+        .transform_filter(alt.datum.Region != "Bad game")
+        .mark_rect(opacity=0.10)
+        .encode(
+            x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+            x2="q2:Q",
+            y=alt.Y("c:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+            y2="c2:Q",
+            color=alt.Color(
+                "Region:N",
+                sort=region_order,
+                scale=alt.Scale(domain=region_order, range=[region_colors[r] for r in region_order]),
+                legend=None,
+            ),
+            tooltip=[],
+        )
     )
+
+    regions_bad = (
+        alt.Chart(regions_df)
+        .transform_filter(alt.datum.Region == "Bad game")
+        .mark_rect(opacity=0.15, color=region_colors["Bad game"])
+        .encode(
+            x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+            x2="q2:Q",
+            y=alt.Y("c:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+            y2="c2:Q",
+            tooltip=[],
+        )
+    )
+
+    regions = regions_other + regions_bad
 
     axes = alt.Chart(df_plot).mark_point(opacity=0).encode(
         x=alt.X(
@@ -361,11 +381,11 @@ def render_chart(
 
     region_labels_df = pd.DataFrame(
         [
-            {"label": "Amazing game", "x": 0.86, "y": 0.92},
-            {"label": "Great game", "x": 0.75, "y": 0.80},
+            {"label": "Amazing", "x": 0.93, "y": 0.93},
+            {"label": "Great game", "x": 0.82, "y": 0.82},
             {"label": "Good game", "x": 0.60, "y": 0.60},
-            {"label": "Ok game", "x": 0.45, "y": 0.38},
-            {"label": "Crap game", "x": 0.25, "y": 0.22},
+            {"label": "Ok game", "x": 0.4, "y": 0.4},
+            {"label": "Bad game", "x": 0.2, "y": 0.2},
         ]
     )
     region_text = alt.Chart(region_labels_df).mark_text(
