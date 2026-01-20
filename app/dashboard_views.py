@@ -858,42 +858,50 @@ def _render_menu_row(r) -> str:
     away_inj = str(r.get("Away Key Injuries", "") or "").strip()
     home_inj = str(r.get("Home Key Injuries", "") or "").strip()
 
-    away_tip = py_html.escape(away_inj) if away_inj else "None"
-    home_tip = py_html.escape(home_inj) if home_inj else "None"
+    away_tip = py_html.escape(away_inj) if away_inj else ""
+    home_tip = py_html.escape(home_inj) if home_inj else ""
+
+    away_key_html = (
+        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">Key Injuries</div>"
+        if away_inj
+        else ""
+    )
+    home_key_html = (
+        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{home_tip}\">Key Injuries</div>"
+        if home_inj
+        else ""
+    )
     away_logo = py_html.escape(str(r["Away logo"]))
     home_logo = py_html.escape(str(r["Home logo"]))
     away_img = f"<img src='{away_logo}'/>" if away_logo else ""
     home_img = f"<img src='{home_logo}'/>" if home_logo else ""
 
-    return f"""
-<div class="menu-row">
-  <div class="menu-awi">
-    <div class="score">{awi_score} WI</div>
-    <div class="label">{label}</div>
-    {live_badge}
-  </div>
-  <div class="menu-matchup">
-    <div class="teamline">
-      {away_img}
-      <div class="name">{away}</div>
-      <div class="record">{record_away}</div>
-      <div class="sep">|</div>
-      <div class="health" data-tooltip="{away_tip}">Key Injuries</div>
-    </div>
-    <div class="teamline">
-      {home_img}
-      <div class="name">{home}</div>
-      <div class="record">{record_home}</div>
-      <div class="sep">|</div>
-      <div class="health" data-tooltip="{home_tip}">Key Injuries</div>
-    </div>
-  </div>
-  <div class="menu-meta">
-    <div>Tip: {tip}</div>
-    <div>Spread: {spread_str}</div>
-  </div>
+    # Avoid leading indentation/newlines: Streamlit Markdown can render it as a code block.
+    return f"""<div class="menu-row">
+<div class="menu-awi">
+<div class="score">{awi_score} WI</div>
+<div class="label">{label}</div>
+{live_badge}
 </div>
-"""
+<div class="menu-matchup">
+<div class="teamline">
+{away_img}
+<div class="name">{away}</div>
+<div class="record">{record_away}</div>
+{away_key_html}
+</div>
+<div class="teamline">
+{home_img}
+<div class="name">{home}</div>
+<div class="record">{record_home}</div>
+{home_key_html}
+</div>
+</div>
+<div class="menu-meta">
+<div>Tip: {tip}</div>
+<div>Spread: {spread_str}</div>
+</div>
+</div>"""
 
 
 def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[str]) -> None:
