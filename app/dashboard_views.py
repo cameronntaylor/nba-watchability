@@ -862,12 +862,12 @@ def _render_menu_row(r) -> str:
     home_tip = py_html.escape(home_inj) if home_inj else ""
 
     away_key_html = (
-        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">Key Injuries</div>"
+        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">❗ Key Injuries</div>"
         if away_inj
         else ""
     )
     home_key_html = (
-        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{home_tip}\">Key Injuries</div>"
+        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{home_tip}\">❗ Key Injuries</div>"
         if home_inj
         else ""
     )

@@ -7,17 +7,17 @@ from core.watchability_v2_params import SIGMA
 
 # Best and worst possible spreads bunched
 SPREAD_CAP = 15
-SPREAD_MIN = 3
+SPREAD_MIN = 0.5
 
 # Best and worst possible win percentages bunched
-WIN_MAX = 0.75
+WIN_MAX = 0.66
 WIN_MIN = 0.2
 
-# Extra multiplier for quality
-QUALITY_MULTIPLIER = 1
+# Extra multiplier for quality and closeness
+RELATIVE_QUALITY_MULTIPLIER = 0.7
 
-# Curvature of closeness score
-CLOSENESS_MULTIPLIER = 1.0
+# Curvature of closeness score (to allow spreads to matter more as they get larger)
+CLOSENESS_CURVATURE = 0.9
 
 # Floors for each input into utility
 QUALITY_FLOOR = 0.1
@@ -38,7 +38,6 @@ def team_quality(
     w1: float,
     w2: float,
     floor: float = QUALITY_FLOOR,
-    quality_multiplier: float = QUALITY_MULTIPLIER,
     win_max: float = WIN_MAX,
     win_min: float = WIN_MIN,
 ) -> float:
@@ -47,7 +46,7 @@ def team_quality(
     Defined as: (avg(win%) - min(win%)) / (max(win%) - min(win%))
     """
     avg_wp = 0.5 * (float(w1) + float(w2))
-    return _clamp01_floor((avg_wp - win_min) / (win_max - win_min), floor=floor) * quality_multiplier
+    return _clamp01_floor((avg_wp - win_min) / (win_max - win_min), floor=floor)
 
 
 def closeness(
@@ -55,7 +54,7 @@ def closeness(
     cap: float = SPREAD_CAP,
     spread_min: float = SPREAD_MIN,
     floor: float = CLOSENESS_FLOOR,
-    closeness_multiplier: float = CLOSENESS_MULTIPLIER,
+    closeness_curvature: float = CLOSENESS_CURVATURE,
 ) -> float:
     """
     Closeness score for a matchup, normalized to [0,1].
@@ -66,13 +65,14 @@ def closeness(
     if abs_spread is None:
         return float(floor)
     x = min(float(abs_spread), float(cap))
-    return _clamp01_floor(((float(cap) - x) / (float(cap) - spread_min))**closeness_multiplier, floor=floor)
+    return _clamp01_floor(((float(cap) - x) / (float(cap) - spread_min))**closeness_curvature, floor=floor)
 
 
 def uavg(
     team_quality_: float,
     closeness_: float,
     sigma: float = SIGMA,
+    relative_quality_multiplier: float = RELATIVE_QUALITY_MULTIPLIER,
 ) -> float:
     """
     CES utility (Watchability v2) over: Quality, Competitiveness.
@@ -91,7 +91,7 @@ def uavg(
         # Limit case: geometric mean.
         return float((q * c) ** (1.0 / 2.0))
 
-    return float(((q**rho + c**rho)/2.0) ** (1.0 / rho))
+    return float(((relative_quality_multiplier * q**rho + (1.0 - relative_quality_multiplier) * c**rho)) ** (1.0 / rho))
 
 
 def awi(team_quality_: float, closeness_: float) -> float:
