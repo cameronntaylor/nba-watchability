@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from core.watchability_v2_params import SIGMA
 
 
 QUALITY_MULTIPLIER = 1
@@ -61,22 +62,33 @@ def closeness(
 
 
 def uavg(
-    team_quality_: float, 
-    closeness_: float
-    ) -> float:
+    team_quality_: float,
+    closeness_: float,
+    sigma: float = SIGMA,
+) -> float:
     """
-    Average Cobb-Douglas utility over three preference mixes.
-    Uavg = 1/3 * q^0.5 * c^0.5 + 1/3 * q^0.25 * c^0.75 + 1/3 * q^0.75 * c^0.25
+    CES utility (Watchability v2) over: Quality, Competitiveness.
+
+    WI_utility = ( (q^ρ + c^ρ) / 2 )^(1/ρ), where ρ = (σ - 1) / σ.
+    Returns a value in ~[0.1, 1].
     """
     q = _clamp01_floor(team_quality_, floor=QUALITY_FLOOR)
     c = _clamp01_floor(closeness_, floor=CLOSENESS_FLOOR)
-    return (q**0.5 * c**0.5 + q**0.25 * c**0.75 + q**0.75 * c**0.25) / 3.0
+
+    sigma_f = float(sigma)
+    if sigma_f == 0:
+        return float(min(q, c))
+    rho = (sigma_f - 1.0) / sigma_f
+    if rho == 0:
+        # Limit case: geometric mean.
+        return float((q * c) ** (1.0 / 2.0))
+
+    return float(((q**rho + c**rho) / 2.0) ** (1.0 / rho))
 
 
 def awi(team_quality_: float, closeness_: float) -> float:
     """
     Watchability Index (WI), scaled to [0,100].
-    WI = 100 * (Uavg - 0) / (1 - 0) = 100 * Uavg
     """
     return 100.0 * uavg(team_quality_, closeness_)
 
@@ -103,9 +115,21 @@ class Watchability:
     label: str
 
 
-def compute_watchability(w1: float, w2: float, abs_spread: Optional[float]) -> Watchability:
+def compute_watchability(
+    w1: float,
+    w2: float,
+    abs_spread: Optional[float],
+    *,
+    sigma: float = SIGMA,
+) -> Watchability:
     q = team_quality(w1, w2)
     c = closeness(abs_spread)
-    u = uavg(q, c)
+    u = uavg(q, c, sigma=sigma)
     a = 100.0 * u
-    return Watchability(team_quality=q, closeness=c, uavg=u, awi=a, label=awi_label(a))
+    return Watchability(
+        team_quality=q,
+        closeness=c,
+        uavg=u,
+        awi=a,
+        label=awi_label(a),
+    )

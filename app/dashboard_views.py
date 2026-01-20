@@ -9,14 +9,17 @@ from typing import Tuple, Dict, List
 import altair as alt
 import pandas as pd
 import streamlit as st
+import requests
 from dateutil import parser as dtparser
 from dateutil import tz
 
 from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
-from core.standings import get_record, get_win_pct
-from core.standings_espn import fetch_team_standings_maps
+from core.standings import _normalize_team_name, get_record, get_win_pct
+from core.standings_espn import fetch_team_standings_detail_maps
 from core.team_meta import get_logo_url
+from core.health_espn import compute_team_health, injury_weight
+from core.importance import compute_importance_detail_map
 
 import core.watchability as watch
 
@@ -47,6 +50,35 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-matchup img {width: 28px; height: 28px;}
 .menu-matchup .name {font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .menu-matchup .record {font-size: 12px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-matchup .sep {font-size: 12px; font-weight: 400; color: rgba(49,51,63,0.35); white-space: nowrap;}
+.menu-matchup .health {font-size: 12px; font-weight: 600; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-matchup .health[data-tooltip] {cursor: pointer; text-decoration: underline dotted rgba(49,51,63,0.35); position: relative;}
+.menu-matchup .health[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  top: 125%;
+  z-index: 9999;
+  max-width: 320px;
+  white-space: normal;
+  background: rgba(255,255,255,0.98);
+  color: rgba(49,51,63,0.95);
+  border: 1px solid rgba(49,51,63,0.20);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.menu-matchup .health[data-tooltip]:hover::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 110%;
+  border-width: 6px;
+  border-style: solid;
+  border-color: transparent transparent rgba(49,51,63,0.20) transparent;
+}
 .menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
 
@@ -100,7 +132,35 @@ def load_games() -> list:
 
 @st.cache_data(ttl=60 * 60)  # 1 hour
 def load_standings():
-    return fetch_team_standings_maps()
+    try:
+        return fetch_team_standings_detail_maps()
+    except Exception:
+        return {}, {}, {}
+
+
+@st.cache_data(ttl=60 * 60 * 24)  # 24 hours (tiers stable-ish)
+def load_team_tiers(team_names: tuple[str, ...]) -> dict[str, dict]:
+    """
+    Returns per-team (normalized team name):
+      { 'tier_players': [{id,name,tier_weight}] }
+    """
+    out: dict[str, dict] = {}
+    for name in team_names:
+        key = _normalize_team_name(name)
+        try:
+            _, players = compute_team_health(name)
+        except Exception:
+            out[key] = {"tier_players": []}
+            continue
+
+        out[key] = {
+            "tier_players": [
+                {"id": p.athlete_id, "name": p.name, "tier_weight": float(p.tier_weight)}
+                for p in players
+                if float(p.tier_weight) > 0
+            ]
+        }
+    return out
 
 
 def _parse_score(x):
@@ -139,10 +199,85 @@ def load_espn_game_map(local_dates_iso: tuple[str, ...]) -> dict[tuple[str, str,
             if home and away and state:
                 out[(iso, home, away)] = {
                     "state": state,
+                    "game_id": str(g.get("game_id") or ""),
                     "home_score": home_score,
                     "away_score": away_score,
                     "time_remaining": time_remaining,
                 }
+    return out
+
+
+def _normalize_status_for_display(status: str | None) -> str:
+    s = (status or "").strip()
+    if not s:
+        return "Available"
+    if s.upper() == "GTD":
+        return "GTD"
+    return s
+
+
+@st.cache_data(ttl=60 * 10)  # 10 min
+def load_espn_game_injury_report_map(game_ids: tuple[str, ...]) -> dict[str, dict[str, dict[str, str]]]:
+    """
+    Returns: game_id -> team_key -> athlete_id -> status
+    (team_key is normalized team displayName from ESPN summary)
+    """
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for gid in game_ids:
+        gid_s = str(gid).strip()
+        if not gid_s:
+            continue
+        try:
+            url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
+            r = requests.get(url, params={"event": gid_s}, timeout=12)
+            r.raise_for_status()
+            data = r.json()
+        except Exception:
+            continue
+
+        injuries = data.get("injuries") if isinstance(data, dict) else None
+        if not isinstance(injuries, list):
+            continue
+
+        by_team: dict[str, dict[str, str]] = {}
+        for block in injuries:
+            if not isinstance(block, dict):
+                continue
+            team = block.get("team")
+            if not isinstance(team, dict):
+                continue
+            team_name = team.get("displayName") or team.get("name")
+            if not team_name:
+                continue
+            team_key = _normalize_team_name(str(team_name))
+            team_inj = block.get("injuries")
+            if not isinstance(team_inj, list):
+                continue
+
+            m: dict[str, str] = {}
+            for inj in team_inj:
+                if not isinstance(inj, dict):
+                    continue
+                athlete = inj.get("athlete")
+                athlete_id = None
+                if isinstance(athlete, dict) and athlete.get("id"):
+                    athlete_id = str(athlete.get("id"))
+                if not athlete_id:
+                    continue
+                status = inj.get("status")
+                details = inj.get("details")
+                fs = None
+                if isinstance(details, dict):
+                    fantasy = details.get("fantasyStatus")
+                    if isinstance(fantasy, dict):
+                        fs = fantasy.get("displayDescription") or fantasy.get("description") or fantasy.get("abbreviation")
+
+                chosen = _normalize_status_for_display(str(fs) if fs else (str(status) if status else ""))
+                m[athlete_id] = chosen
+            by_team[team_key] = m
+
+        out[gid_s] = by_team
+
     return out
 
 
@@ -152,7 +287,7 @@ def _fmt_m_d(d: dt.date) -> str:
 
 def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict[str, str]]:
     games = load_games()
-    winpct_map, record_map = load_standings()
+    winpct_map, record_map, detail_map = load_standings()
     if not winpct_map:
         st.warning(
             "Could not load standings from ESPN; win% will default to 0.5. "
@@ -160,18 +295,34 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
         )
 
     local_tz = tz.gettz("America/Los_Angeles")
+    importance_detail = compute_importance_detail_map(detail_map)
+
+    team_names = sorted({g.home_team for g in games} | {g.away_team for g in games})
+    team_tiers = load_team_tiers(tuple(team_names)) if team_names else {}
 
     rows = []
     for g in games:
-        w_home = get_win_pct(g.home_team, winpct_map, default=0.5)
-        w_away = get_win_pct(g.away_team, winpct_map, default=0.5)
+        w_home_raw = get_win_pct(g.home_team, winpct_map, default=0.5)
+        w_away_raw = get_win_pct(g.away_team, winpct_map, default=0.5)
+
+        home_key = _normalize_team_name(g.home_team)
+        away_key = _normalize_team_name(g.away_team)
+
+        imp_home = float(importance_detail.get(home_key, {}).get("importance", 0.1))
+        imp_away = float(importance_detail.get(away_key, {}).get("importance", 0.1))
+        game_importance = 0.5 * (imp_home + imp_away)
+
+        seed_radius_home = importance_detail.get(home_key, {}).get("seed_radius")
+        seed_radius_away = importance_detail.get(away_key, {}).get("seed_radius")
+        playoff_radius_home = importance_detail.get(home_key, {}).get("playoff_radius")
+        playoff_radius_away = importance_detail.get(away_key, {}).get("playoff_radius")
+
         w_home_rec, l_home_rec = get_record(g.home_team, record_map)
         w_away_rec, l_away_rec = get_record(g.away_team, record_map)
         home_record = "—" if (w_home_rec is None or l_home_rec is None) else f"{w_home_rec}-{l_home_rec}"
         away_record = "—" if (w_away_rec is None or l_away_rec is None) else f"{w_away_rec}-{l_away_rec}"
 
         abs_spread = None if g.home_spread is None else abs(float(g.home_spread))
-        w = watch.compute_watchability(w_home, w_away, abs_spread)
 
         if g.commence_time_utc:
             dt_utc = dtparser.isoparse(g.commence_time_utc)
@@ -201,12 +352,29 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
                 "|spread|": abs_spread,
                 "Record (away)": away_record,
                 "Record (home)": home_record,
-                "Team quality": w.team_quality,
-                "Closeness": w.closeness,
-                "Uavg": w.uavg,
-                "aWI": w.awi,
-                "Region": w.label,
+                "Team quality": None,
+                "Closeness": None,
+                "Importance": game_importance,
+                "Importance (home)": imp_home,
+                "Importance (away)": imp_away,
+                "Seed radius (home)": seed_radius_home,
+                "Seed radius (away)": seed_radius_away,
+                "Playoff radius (home)": playoff_radius_home,
+                "Playoff radius (away)": playoff_radius_away,
+                "Uavg": None,
+                "aWI": None,
+                "Region": None,
                 "Spread source": g.spread_source,
+                "Win% (away raw)": float(w_away_raw),
+                "Win% (home raw)": float(w_home_raw),
+                "Adj win% (away)": float(w_away_raw),
+                "Adj win% (home)": float(w_home_raw),
+                "Health (away)": 1.0,
+                "Health (home)": 1.0,
+                "Tier 1 (away)": "",
+                "Tier 2 (away)": "",
+                "Tier 1 (home)": "",
+                "Tier 2 (home)": "",
             }
         )
 
@@ -214,8 +382,6 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
     if df.empty:
         st.warning("No games returned from Odds API. (Off day? API issue? Check your key/limits.)")
         st.stop()
-
-    df = df.sort_values("aWI", ascending=False).reset_index(drop=True)
 
     df_dates = (
         df.dropna(subset=["Local date"])
@@ -241,11 +407,13 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
             return rec.get(key)
 
         df["Status"] = df.apply(lambda r: _lookup_game(r, "state") or "pre", axis=1)
+        df["ESPN game id"] = df.apply(lambda r: _lookup_game(r, "game_id"), axis=1)
         df["Away score"] = df.apply(lambda r: _lookup_game(r, "away_score"), axis=1)
         df["Home score"] = df.apply(lambda r: _lookup_game(r, "home_score"), axis=1)
         df["Time remaining"] = df.apply(lambda r: _lookup_game(r, "time_remaining"), axis=1)
     else:
         df["Status"] = "pre"
+        df["ESPN game id"] = None
         df["Away score"] = None
         df["Home score"] = None
         df["Time remaining"] = None
@@ -266,6 +434,96 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
 
     # Remove finished games from both views.
     df = df[df["Status"] != "post"].copy()
+
+    # Load per-game injury reports (matchup-specific) from ESPN summary API.
+    game_ids = tuple(sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()}))
+    injury_reports = load_espn_game_injury_report_map(game_ids) if game_ids else {}
+
+    def _team_tier_info(team_key: str, game_id: str | None) -> tuple[float, str, str]:
+        tiers = team_tiers.get(team_key, {}).get("tier_players", [])
+        by_team = injury_reports.get(str(game_id or ""), {}).get(team_key, {})
+
+        t1 = []
+        t2 = []
+        penalty = 0.0
+        for p in tiers:
+            pid = str(p.get("id") or "")
+            name = str(p.get("name") or "")
+            tw = float(p.get("tier_weight") or 0.0)
+            st = by_team.get(pid) or "Available"
+            st_norm = _normalize_status_for_display(st)
+            if st_norm.lower() not in {"available", "active"}:
+                entry = f"{name}: {st_norm}"
+                if tw >= 0.10 - 1e-9:
+                    t1.append(entry)
+                else:
+                    t2.append(entry)
+            penalty += float(injury_weight(st_norm)) * float(tw)
+
+        health = 1.0 - penalty
+        health = max(0.0, min(1.0, float(health)))
+        return health, ", ".join(t1), ", ".join(t2)
+
+    tier_info_cache: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+    def _memo_team_tier_info(team_key: str, game_id: str | None) -> tuple[float, str, str]:
+        k = (team_key, str(game_id or ""))
+        if k in tier_info_cache:
+            return tier_info_cache[k]
+        v = _team_tier_info(team_key, game_id)
+        tier_info_cache[k] = v
+        return v
+
+    df["Health (away)"] = df.apply(
+        lambda r: _memo_team_tier_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[0], axis=1
+    )
+    df["Health (home)"] = df.apply(
+        lambda r: _memo_team_tier_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[0], axis=1
+    )
+    df["Tier 1 (away)"] = df.apply(
+        lambda r: _memo_team_tier_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[1], axis=1
+    )
+    df["Tier 2 (away)"] = df.apply(
+        lambda r: _memo_team_tier_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[2], axis=1
+    )
+    df["Tier 1 (home)"] = df.apply(
+        lambda r: _memo_team_tier_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[1], axis=1
+    )
+    df["Tier 2 (home)"] = df.apply(
+        lambda r: _memo_team_tier_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[2], axis=1
+    )
+
+    def _combine_injuries(t1: str, t2: str) -> str:
+        t1 = str(t1 or "").strip()
+        t2 = str(t2 or "").strip()
+        if t1 and t2:
+            return f"{t1}, {t2}"
+        return t1 or t2 or ""
+
+    df["Away Injuries"] = df.apply(lambda r: _combine_injuries(r["Tier 1 (away)"], r["Tier 2 (away)"]), axis=1)
+    df["Home Injuries"] = df.apply(lambda r: _combine_injuries(r["Tier 1 (home)"], r["Tier 2 (home)"]), axis=1)
+
+    df["Adj win% (away)"] = df["Win% (away raw)"].astype(float) * df["Health (away)"].astype(float)
+    df["Adj win% (home)"] = df["Win% (home raw)"].astype(float) * df["Health (home)"].astype(float)
+
+    def _compute_watchability_row(r) -> pd.Series:
+        w = watch.compute_watchability(
+            float(r["Adj win% (home)"]),
+            float(r["Adj win% (away)"]),
+            r["|spread|"],
+        )
+        return pd.Series(
+            {
+                "Team quality": w.team_quality,
+                "Closeness": w.closeness,
+                "Uavg": w.uavg,
+                "aWI": w.awi,
+                "Region": w.label,
+            }
+        )
+
+    df[["Team quality", "Closeness", "Uavg", "aWI", "Region"]] = df.apply(_compute_watchability_row, axis=1)
+    df = df.sort_values("aWI", ascending=False).reset_index(drop=True)
 
     return df, df_dates, date_options, date_to_label
 
@@ -361,7 +619,7 @@ def render_chart(
             "Team quality:Q",
             scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]),
             axis=alt.Axis(
-                title="Team Quality",
+                title="Adj Team Quality",
                 format=".2f",
                 titleColor="rgba(0,0,0,0.9)",
                 titleFontSize=18,
@@ -410,7 +668,7 @@ def render_chart(
     )
 
     x_axis_label_df = pd.DataFrame(
-        [{"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
+        [{"text": "Adj Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
     )
     x_axis_label_text = alt.Chart(x_axis_label_df).mark_text(
         dy=78,
@@ -448,6 +706,10 @@ def render_chart(
         alt.Tooltip("Region:N"),
         alt.Tooltip("Tip (PT):N"),
         alt.Tooltip("Home spread:Q"),
+        alt.Tooltip("Health (away):Q", title="Away health", format=".2f"),
+        alt.Tooltip("Health (home):Q", title="Home health", format=".2f"),
+        alt.Tooltip("Away Injuries:N"),
+        alt.Tooltip("Home Injuries:N"),
         alt.Tooltip("Record (away):N"),
         alt.Tooltip("Record (home):N"),
     ]
@@ -473,40 +735,37 @@ def render_chart(
     dx = 0.03
     away_points = df_plot.assign(_x=(df_plot["Team quality"] - dx).clip(0, 1), _logo=df_plot["Away logo"])
     home_points = df_plot.assign(_x=(df_plot["Team quality"] + dx).clip(0, 1), _logo=df_plot["Home logo"])
+    tooltip_cols = [
+        "Matchup",
+        "Tip short",
+        "Tip (PT)",
+        "Home spread",
+        "Record (away)",
+        "Record (home)",
+        "aWI",
+        "Region",
+        "Team quality",
+        "Closeness",
+        "Importance",
+        "Health (away)",
+        "Health (home)",
+        "Away Injuries",
+        "Home Injuries",
+        "Importance (away)",
+        "Importance (home)",
+        "Seed radius (away)",
+        "Seed radius (home)",
+        "Playoff radius (away)",
+        "Playoff radius (home)",
+        "_x",
+        "_logo",
+    ]
+    tooltip_cols = list(dict.fromkeys([c for c in tooltip_cols if c in df_plot.columns] + ["_x", "_logo"]))
+
     images_df = pd.concat(
         [
-            away_points[
-                [
-                    "Matchup",
-                    "Tip short",
-                    "Tip (PT)",
-                    "Home spread",
-                    "Record (away)",
-                    "Record (home)",
-                    "aWI",
-                    "Region",
-                    "Closeness",
-                    "Team quality",
-                    "_x",
-                    "_logo",
-                ]
-            ].assign(_side="away"),
-            home_points[
-                [
-                    "Matchup",
-                    "Tip short",
-                    "Tip (PT)",
-                    "Home spread",
-                    "Record (away)",
-                    "Record (home)",
-                    "aWI",
-                    "Region",
-                    "Closeness",
-                    "Team quality",
-                    "_x",
-                    "_logo",
-                ]
-            ].assign(_side="home"),
+            away_points[tooltip_cols].assign(_side="away"),
+            home_points[tooltip_cols].assign(_side="home"),
         ],
         ignore_index=True,
     )
@@ -566,6 +825,26 @@ def _render_menu_row(r) -> str:
     spread_str = "?" if spread is None else f"{float(spread):g}"
     record_away = py_html.escape(str(r.get("Record (away)", "—")))
     record_home = py_html.escape(str(r.get("Record (home)", "—")))
+    health_away = r.get("Health (away)")
+    health_home = r.get("Health (home)")
+    health_away_str = "—" if health_away is None else f"{float(health_away):.2f}"
+    health_home_str = "—" if health_home is None else f"{float(health_home):.2f}"
+
+    away_t1 = str(r.get("Tier 1 (away)", "") or "").strip()
+    away_t2 = str(r.get("Tier 2 (away)", "") or "").strip()
+    home_t1 = str(r.get("Tier 1 (home)", "") or "").strip()
+    home_t2 = str(r.get("Tier 2 (home)", "") or "").strip()
+
+    def _out_tip(t1: str, t2: str) -> str:
+        parts = []
+        if t1:
+            parts.append(f"Tier 1: {t1}")
+        if t2:
+            parts.append(f"Tier 2: {t2}")
+        return " | ".join(parts) if parts else "No Tier 1/2 injury statuses"
+
+    away_health_tip = py_html.escape(_out_tip(away_t1, away_t2))
+    home_health_tip = py_html.escape(_out_tip(home_t1, home_t2))
     away_logo = py_html.escape(str(r["Away logo"]))
     home_logo = py_html.escape(str(r["Home logo"]))
     away_img = f"<img src='{away_logo}'/>" if away_logo else ""
@@ -583,11 +862,15 @@ def _render_menu_row(r) -> str:
       {away_img}
       <div class="name">{away}</div>
       <div class="record">{record_away}</div>
+      <div class="sep">|</div>
+      <div class="health" data-tooltip="{away_health_tip}">Health Score {health_away_str}</div>
     </div>
     <div class="teamline">
       {home_img}
       <div class="name">{home}</div>
       <div class="record">{record_home}</div>
+      <div class="sep">|</div>
+      <div class="health" data-tooltip="{home_health_tip}">Health Score {health_home_str}</div>
     </div>
   </div>
   <div class="menu-meta">

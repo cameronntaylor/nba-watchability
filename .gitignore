@@ -10,6 +10,7 @@ core/__pycache__/*.pyc
 
 # Local data / caches
 data/
+.cache/
 
 # Local testing
 run_local.sh
