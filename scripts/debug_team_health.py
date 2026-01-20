@@ -9,10 +9,6 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from core.health_espn import compute_team_health, current_nba_season_year
-from core.watchability_v2_params import (
-    TIER1_RELATIVE_IMPACT_THRESHOLD,
-    TIER2_RELATIVE_IMPACT_THRESHOLD,
-)
 
 
 def main() -> int:
@@ -31,9 +27,6 @@ def main() -> int:
     print(f"Team: {args.team}")
     print(f"Season: {year} (type {args.type})")
     print(f"Health score: {health:.3f}")
-    print(
-        f"Tier thresholds: Tier1 >= {TIER1_RELATIVE_IMPACT_THRESHOLD:.2f}, Tier2 >= {TIER2_RELATIVE_IMPACT_THRESHOLD:.2f}"
-    )
     print("")
 
     if not players:
@@ -42,12 +35,11 @@ def main() -> int:
 
     print("Top players by raw impact (PTS+AST+REB):")
     for p in players[: max(0, int(args.top))]:
-        tier = "—"
-        if p.tier_weight > 0:
-            tier = "Tier 1" if p.relative_impact >= TIER1_RELATIVE_IMPACT_THRESHOLD else "Tier 2"
+        contribution = float(p.injury_weight) * float(p.impact_share)
         print(
-            f"- {p.name:28s} raw={p.raw_impact:5.1f} rel={p.relative_impact:4.2f} "
-            f"{tier:6s} tier_w={p.tier_weight:0.2f} status={p.injury_status} injury_w={p.injury_weight:0.1f}"
+            f"- {p.name:28s} raw={p.raw_impact:5.1f} rel={p.relative_raw_impact:4.2f} "
+            f"share={p.impact_share:4.2f} status={p.injury_status:12s} injury_w={p.injury_weight:0.1f} "
+            f"penalty={contribution:0.3f}"
         )
 
     return 0
@@ -55,4 +47,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

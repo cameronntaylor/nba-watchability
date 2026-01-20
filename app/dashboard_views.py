@@ -18,8 +18,9 @@ from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps
 from core.team_meta import get_logo_url
-from core.health_espn import compute_team_health, injury_weight
+from core.health_espn import compute_team_player_impacts, injury_weight
 from core.importance import compute_importance_detail_map
+from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
 
 import core.watchability as watch
 
@@ -138,26 +139,31 @@ def load_standings():
         return {}, {}, {}
 
 
-@st.cache_data(ttl=60 * 60 * 24)  # 24 hours (tiers stable-ish)
-def load_team_tiers(team_names: tuple[str, ...]) -> dict[str, dict]:
+@st.cache_data(ttl=60 * 60 * 24)  # 24 hours (impact stats stable-ish)
+def load_team_impacts(team_names: tuple[str, ...]) -> dict[str, dict]:
     """
     Returns per-team (normalized team name):
-      { 'tier_players': [{id,name,tier_weight}] }
+      { 'players': [{id,name,raw,share,rel}] }
     """
     out: dict[str, dict] = {}
     for name in team_names:
         key = _normalize_team_name(name)
         try:
-            _, players = compute_team_health(name)
+            players = compute_team_player_impacts(name)
         except Exception:
-            out[key] = {"tier_players": []}
+            out[key] = {"players": []}
             continue
 
         out[key] = {
-            "tier_players": [
-                {"id": p.athlete_id, "name": p.name, "tier_weight": float(p.tier_weight)}
+            "players": [
+                {
+                    "id": p.athlete_id,
+                    "name": p.name,
+                    "raw": float(p.raw_impact),
+                    "share": float(p.impact_share),
+                    "rel": float(p.relative_raw_impact),
+                }
                 for p in players
-                if float(p.tier_weight) > 0
             ]
         }
     return out
@@ -177,27 +183,56 @@ def load_espn_game_map(local_dates_iso: tuple[str, ...]) -> dict[tuple[str, str,
     """
     Map (date_iso, home_team_lower, away_team_lower) -> dict with:
       - state ('pre'/'in'/'post')
+      - game_id (str)
       - home_score (int|None)
       - away_score (int|None)
       - time_remaining (str|None) e.g. '5:32 Q3'
     """
     out: dict[tuple[str, str, str], dict] = {}
-    for iso in local_dates_iso:
+    if not local_dates_iso:
+        return out
+
+    targets = set(str(x) for x in local_dates_iso)
+    local_tz = tz.gettz("America/Los_Angeles")
+
+    # ESPN's scoreboard "dates=" is not always aligned with PT local dates for late games,
+    # so fetch an extra day window and then map events back into PT dates.
+    candidate_days = set()
+    for iso in targets:
         try:
             y, m, d = (int(x) for x in iso.split("-"))
             day = dt.date(y, m, d)
+            candidate_days.add(day)
+            candidate_days.add(day + dt.timedelta(days=1))
+        except Exception:
+            continue
+
+    for day in sorted(candidate_days):
+        try:
             games = fetch_games_for_date(day)
         except Exception:
             continue
         for g in games:
-            home = str(g.get("home_team", "")).lower().strip()
-            away = str(g.get("away_team", "")).lower().strip()
+            try:
+                start = g.get("start_time_utc")
+                if start:
+                    dt_local = dtparser.isoparse(str(start)).astimezone(local_tz)
+                    iso_local = dt_local.date().isoformat()
+                else:
+                    iso_local = None
+            except Exception:
+                iso_local = None
+            if not iso_local or iso_local not in targets:
+                continue
+
+            home = _normalize_team_name(str(g.get("home_team", "")))
+            away = _normalize_team_name(str(g.get("away_team", "")))
             state = str(g.get("state", ""))
             home_score = _parse_score(g.get("home_score"))
             away_score = _parse_score(g.get("away_score"))
             time_remaining = g.get("time_remaining")
             if home and away and state:
-                out[(iso, home, away)] = {
+                out[(iso_local, home, away)] = {
                     "state": state,
                     "game_id": str(g.get("game_id") or ""),
                     "home_score": home_score,
@@ -298,7 +333,7 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
     importance_detail = compute_importance_detail_map(detail_map)
 
     team_names = sorted({g.home_team for g in games} | {g.away_team for g in games})
-    team_tiers = load_team_tiers(tuple(team_names)) if team_names else {}
+    team_impacts = load_team_impacts(tuple(team_names)) if team_names else {}
 
     rows = []
     for g in games:
@@ -371,10 +406,8 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
                 "Adj win% (home)": float(w_home_raw),
                 "Health (away)": 1.0,
                 "Health (home)": 1.0,
-                "Tier 1 (away)": "",
-                "Tier 2 (away)": "",
-                "Tier 1 (home)": "",
-                "Tier 2 (home)": "",
+                "Away Key Injuries": "",
+                "Home Key Injuries": "",
             }
         )
 
@@ -399,8 +432,11 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
 
     if date_options:
         def _lookup_game(r, key: str):
+            iso = str(r["Local date"])
+            home = _normalize_team_name(str(r["Home team"]))
+            away = _normalize_team_name(str(r["Away team"]))
             rec = game_map.get(
-                (str(r["Local date"]), str(r["Home team"]).lower().strip(), str(r["Away team"]).lower().strip())
+                (iso, home, away)
             )
             if not rec:
                 return None
@@ -439,69 +475,54 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
     game_ids = tuple(sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()}))
     injury_reports = load_espn_game_injury_report_map(game_ids) if game_ids else {}
 
-    def _team_tier_info(team_key: str, game_id: str | None) -> tuple[float, str, str]:
-        tiers = team_tiers.get(team_key, {}).get("tier_players", [])
+    def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str]:
+        players = team_impacts.get(team_key, {}).get("players", [])
         by_team = injury_reports.get(str(game_id or ""), {}).get(team_key, {})
 
-        t1 = []
-        t2 = []
         penalty = 0.0
-        for p in tiers:
+        injured_players = []
+        for p in players:
             pid = str(p.get("id") or "")
             name = str(p.get("name") or "")
-            tw = float(p.get("tier_weight") or 0.0)
-            st = by_team.get(pid) or "Available"
+            share = float(p.get("share") or 0.0)
+            raw = float(p.get("raw") or 0.0)
+            st = by_team.get(pid)
+            if not st:
+                continue
             st_norm = _normalize_status_for_display(st)
-            if st_norm.lower() not in {"available", "active"}:
-                entry = f"{name}: {st_norm}"
-                if tw >= 0.10 - 1e-9:
-                    t1.append(entry)
-                else:
-                    t2.append(entry)
-            penalty += float(injury_weight(st_norm)) * float(tw)
+            penalty += float(injury_weight(st_norm)) * float(share)
+            injured_players.append((raw, share, f"{name}: {st_norm}"))
 
-        health = 1.0 - penalty
+        health = 1.0 - float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * penalty
         health = max(0.0, min(1.0, float(health)))
-        return health, ", ".join(t1), ", ".join(t2)
+        injured_players.sort(key=lambda x: x[0], reverse=True)
+        key_injuries = [s for _, share, s in injured_players if float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD]
+        return health, ", ".join(key_injuries)
 
-    tier_info_cache: dict[tuple[str, str], tuple[float, str, str]] = {}
+    injury_info_cache: dict[tuple[str, str], tuple[float, str]] = {}
 
-    def _memo_team_tier_info(team_key: str, game_id: str | None) -> tuple[float, str, str]:
+    def _memo_team_injury_info(team_key: str, game_id: str | None) -> tuple[float, str]:
         k = (team_key, str(game_id or ""))
-        if k in tier_info_cache:
-            return tier_info_cache[k]
-        v = _team_tier_info(team_key, game_id)
-        tier_info_cache[k] = v
+        if k in injury_info_cache:
+            return injury_info_cache[k]
+        v = _team_key_injuries_and_health(team_key, game_id)
+        injury_info_cache[k] = v
         return v
 
     df["Health (away)"] = df.apply(
-        lambda r: _memo_team_tier_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[0], axis=1
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[0], axis=1
     )
     df["Health (home)"] = df.apply(
-        lambda r: _memo_team_tier_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[0], axis=1
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[0], axis=1
     )
-    df["Tier 1 (away)"] = df.apply(
-        lambda r: _memo_team_tier_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[1], axis=1
+    df["Away Key Injuries"] = df.apply(
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[1] or "",
+        axis=1,
     )
-    df["Tier 2 (away)"] = df.apply(
-        lambda r: _memo_team_tier_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[2], axis=1
+    df["Home Key Injuries"] = df.apply(
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[1] or "",
+        axis=1,
     )
-    df["Tier 1 (home)"] = df.apply(
-        lambda r: _memo_team_tier_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[1], axis=1
-    )
-    df["Tier 2 (home)"] = df.apply(
-        lambda r: _memo_team_tier_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[2], axis=1
-    )
-
-    def _combine_injuries(t1: str, t2: str) -> str:
-        t1 = str(t1 or "").strip()
-        t2 = str(t2 or "").strip()
-        if t1 and t2:
-            return f"{t1}, {t2}"
-        return t1 or t2 or ""
-
-    df["Away Injuries"] = df.apply(lambda r: _combine_injuries(r["Tier 1 (away)"], r["Tier 2 (away)"]), axis=1)
-    df["Home Injuries"] = df.apply(lambda r: _combine_injuries(r["Tier 1 (home)"], r["Tier 2 (home)"]), axis=1)
 
     df["Adj win% (away)"] = df["Win% (away raw)"].astype(float) * df["Health (away)"].astype(float)
     df["Adj win% (home)"] = df["Win% (home raw)"].astype(float) * df["Health (home)"].astype(float)
@@ -539,6 +560,10 @@ def render_chart(
     CLOSENESS_FLOOR = getattr(watch, "CLOSENESS_FLOOR", 0.1)
 
     df_plot = df.copy()
+    if "Away Key Injuries" in df_plot.columns:
+        df_plot["Away Key Injuries"] = df_plot["Away Key Injuries"].fillna("")
+    if "Home Key Injuries" in df_plot.columns:
+        df_plot["Home Key Injuries"] = df_plot["Home Key Injuries"].fillna("")
     if date_options:
         if show_day_selector:
             selected = st.segmented_control(
@@ -708,8 +733,8 @@ def render_chart(
         alt.Tooltip("Home spread:Q"),
         alt.Tooltip("Health (away):Q", title="Away health", format=".2f"),
         alt.Tooltip("Health (home):Q", title="Home health", format=".2f"),
-        alt.Tooltip("Away Injuries:N"),
-        alt.Tooltip("Home Injuries:N"),
+        alt.Tooltip("Away Key Injuries:N"),
+        alt.Tooltip("Home Key Injuries:N"),
         alt.Tooltip("Record (away):N"),
         alt.Tooltip("Record (home):N"),
     ]
@@ -749,8 +774,8 @@ def render_chart(
         "Importance",
         "Health (away)",
         "Health (home)",
-        "Away Injuries",
-        "Home Injuries",
+        "Away Key Injuries",
+        "Home Key Injuries",
         "Importance (away)",
         "Importance (home)",
         "Seed radius (away)",
@@ -830,21 +855,11 @@ def _render_menu_row(r) -> str:
     health_away_str = "—" if health_away is None else f"{float(health_away):.2f}"
     health_home_str = "—" if health_home is None else f"{float(health_home):.2f}"
 
-    away_t1 = str(r.get("Tier 1 (away)", "") or "").strip()
-    away_t2 = str(r.get("Tier 2 (away)", "") or "").strip()
-    home_t1 = str(r.get("Tier 1 (home)", "") or "").strip()
-    home_t2 = str(r.get("Tier 2 (home)", "") or "").strip()
+    away_inj = str(r.get("Away Key Injuries", "") or "").strip()
+    home_inj = str(r.get("Home Key Injuries", "") or "").strip()
 
-    def _out_tip(t1: str, t2: str) -> str:
-        parts = []
-        if t1:
-            parts.append(f"Tier 1: {t1}")
-        if t2:
-            parts.append(f"Tier 2: {t2}")
-        return " | ".join(parts) if parts else "No Tier 1/2 injury statuses"
-
-    away_health_tip = py_html.escape(_out_tip(away_t1, away_t2))
-    home_health_tip = py_html.escape(_out_tip(home_t1, home_t2))
+    away_tip = py_html.escape(away_inj) if away_inj else "None"
+    home_tip = py_html.escape(home_inj) if home_inj else "None"
     away_logo = py_html.escape(str(r["Away logo"]))
     home_logo = py_html.escape(str(r["Home logo"]))
     away_img = f"<img src='{away_logo}'/>" if away_logo else ""
@@ -863,14 +878,14 @@ def _render_menu_row(r) -> str:
       <div class="name">{away}</div>
       <div class="record">{record_away}</div>
       <div class="sep">|</div>
-      <div class="health" data-tooltip="{away_health_tip}">Health Score {health_away_str}</div>
+      <div class="health" data-tooltip="{away_tip}">Key Injuries</div>
     </div>
     <div class="teamline">
       {home_img}
       <div class="name">{home}</div>
       <div class="record">{record_home}</div>
       <div class="sep">|</div>
-      <div class="health" data-tooltip="{home_health_tip}">Health Score {health_home_str}</div>
+      <div class="health" data-tooltip="{home_tip}">Key Injuries</div>
     </div>
   </div>
   <div class="menu-meta">
