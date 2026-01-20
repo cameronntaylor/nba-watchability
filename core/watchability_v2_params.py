@@ -23,4 +23,4 @@ IMPORTANCE_CEILING = 1.0
 
 # --- CES aggregation ---
 
-SIGMA = 0.8  # ρ = (σ - 1) / σ
+SIGMA = 0.4  # ρ = (σ - 1) / σ
