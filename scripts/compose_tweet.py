@@ -82,8 +82,8 @@ def _avg_wi_summary() -> str | None:
     status_map = {}
     try:
         for e in fetch_games_for_date(selected_date):
-            home = str(e.get("home_team", "")).lower().strip()
-            away = str(e.get("away_team", "")).lower().strip()
+            home = _normalize_team_name(str(e.get("home_team", "")))
+            away = _normalize_team_name(str(e.get("away_team", "")))
             state = str(e.get("state", ""))
             if home and away and state:
                 status_map[(date_iso, home, away)] = state
@@ -94,7 +94,7 @@ def _avg_wi_summary() -> str | None:
     for r in rows:
         if r["date"] != selected_date:
             continue
-        state = status_map.get((date_iso, r["home"], r["away"]))
+        state = status_map.get((date_iso, _normalize_team_name(r["home"]), _normalize_team_name(r["away"])))
         if state == "post":
             continue
         wis.append(r["wi"])

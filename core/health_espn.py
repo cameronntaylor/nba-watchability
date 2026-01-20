@@ -11,10 +11,7 @@ from core.watchability_v2_params import (
     INJURY_WEIGHT_DOUBTFUL,
     INJURY_WEIGHT_OUT,
     INJURY_WEIGHT_QUESTIONABLE,
-    TIER1_RELATIVE_IMPACT_THRESHOLD,
-    TIER1_WEIGHT,
-    TIER2_RELATIVE_IMPACT_THRESHOLD,
-    TIER2_WEIGHT,
+    INJURY_OVERALL_IMPORTANCE_WEIGHT,
 )
 
 import requests
@@ -196,10 +193,82 @@ class PlayerImpact:
     athlete_id: str
     name: str
     raw_impact: float
-    relative_impact: float
-    tier_weight: float
+    impact_share: float
+    relative_raw_impact: float
     injury_status: str
     injury_weight: float
+
+
+def compute_team_player_impacts(
+    team_name: str,
+    *,
+    season_year: Optional[int] = None,
+    season_type: int = 2,
+    roster_ttl_seconds: int = 24 * 60 * 60,
+    stats_ttl_seconds: int = 24 * 60 * 60,
+) -> List[PlayerImpact]:
+    """
+    Returns per-player impact stats for a team. Injury fields are included but
+    callers can ignore them (e.g., when using matchup-specific game injury reports).
+
+    Raw impact = avgPoints + avgAssists + avgRebounds (per game).
+    impact_share = raw / sum(raw over team)
+    relative_raw_impact = raw / max(raw over team)
+    """
+    year = season_year or current_nba_season_year()
+    team_key = _normalize_team_name(team_name)
+
+    team_id_map = fetch_team_id_map()
+    team_id = team_id_map.get(team_key)
+    if not team_id:
+        return []
+
+    roster = fetch_team_roster(team_id, ttl_seconds=roster_ttl_seconds)
+    if not roster:
+        return []
+
+    impacts_raw: List[Tuple[str, str, float, str]] = []
+    for athlete_id, athlete_name, roster_status in roster:
+        try:
+            pts, ast, reb = fetch_athlete_per_game_stats(
+                athlete_id, season_year=year, season_type=season_type, ttl_seconds=stats_ttl_seconds
+            )
+        except requests.HTTPError:
+            continue
+        except Exception:
+            continue
+        if pts is None and ast is None and reb is None:
+            continue
+        raw = float(pts or 0.0) + float(ast or 0.0) + float(reb or 0.0)
+        impacts_raw.append((athlete_id, athlete_name, raw, roster_status or "Available"))
+
+    if not impacts_raw:
+        return []
+
+    sum_raw = sum(r for _, _, r, _ in impacts_raw) or 0.0
+    max_raw = max(r for _, _, r, _ in impacts_raw) or 0.0
+    if sum_raw <= 0 or max_raw <= 0:
+        return []
+
+    players: List[PlayerImpact] = []
+    for athlete_id, athlete_name, raw, status in impacts_raw:
+        share = raw / sum_raw if sum_raw else 0.0
+        rel = raw / max_raw if max_raw else 0.0
+        iw = _injury_weight(status)
+        players.append(
+            PlayerImpact(
+                athlete_id=str(athlete_id),
+                name=str(athlete_name),
+                raw_impact=float(raw),
+                impact_share=float(share),
+                relative_raw_impact=float(rel),
+                injury_status=str(status),
+                injury_weight=float(iw),
+            )
+        )
+
+    players.sort(key=lambda p: p.raw_impact, reverse=True)
+    return players
 
 
 def fetch_team_id_map(*, ttl_seconds: int = 7 * 24 * 60 * 60) -> Dict[str, str]:
@@ -366,64 +435,44 @@ def compute_team_health(
         return 1.0, []
 
     injuries = fetch_injury_status_map(ttl_seconds=injuries_ttl_seconds)
-
-    impacts_raw: List[Tuple[str, str, float]] = []
     roster_status_map = {athlete_id: status for athlete_id, _, status in roster if status}
 
-    for athlete_id, athlete_name, _roster_status in roster:
-        try:
-            pts, ast, reb = fetch_athlete_per_game_stats(
-                athlete_id, season_year=year, season_type=season_type, ttl_seconds=stats_ttl_seconds
-            )
-        except requests.HTTPError:
-            continue
-        except Exception:
-            continue
-        if pts is None and ast is None and reb is None:
-            continue
-        raw = float(pts or 0.0) + float(ast or 0.0) + float(reb or 0.0)
-        impacts_raw.append((athlete_id, athlete_name, raw))
-
-    if not impacts_raw:
-        return 1.0, []
-
-    max_raw = max(r for _, _, r in impacts_raw) or 0.0
-    if max_raw <= 0:
+    impacts = compute_team_player_impacts(
+        team_name,
+        season_year=year,
+        season_type=season_type,
+        roster_ttl_seconds=roster_ttl_seconds,
+        stats_ttl_seconds=stats_ttl_seconds,
+    )
+    if not impacts:
         return 1.0, []
 
     players: List[PlayerImpact] = []
     penalty = 0.0
-    for athlete_id, athlete_name, raw in impacts_raw:
-        rel = raw / max_raw if max_raw else 0.0
-        tier_w = 0.0
-        if rel >= TIER1_RELATIVE_IMPACT_THRESHOLD:
-            tier_w = TIER1_WEIGHT
-        elif rel >= TIER2_RELATIVE_IMPACT_THRESHOLD:
-            tier_w = TIER2_WEIGHT
-
+    for p in impacts:
+        athlete_id = p.athlete_id
         status = roster_status_map.get(athlete_id) or injuries.get(athlete_id, "Available")
-        # Refine non-available statuses (e.g. roster says Out but player page says Probable).
         if status and _status_priority(status) > 0:
             refined = fetch_athlete_status_refined(athlete_id)
             if refined:
                 status = refined
         iw = _injury_weight(status)
-        penalty += float(iw) * float(tier_w)
+        penalty += float(iw) * float(p.impact_share)
         players.append(
             PlayerImpact(
-                athlete_id=str(athlete_id),
-                name=str(athlete_name),
-                raw_impact=float(raw),
-                relative_impact=float(rel),
-                tier_weight=float(tier_w),
+                athlete_id=p.athlete_id,
+                name=p.name,
+                raw_impact=p.raw_impact,
+                impact_share=p.impact_share,
+                relative_raw_impact=p.relative_raw_impact,
                 injury_status=str(status),
                 injury_weight=float(iw),
             )
         )
 
-    health = 1.0 - penalty
+    health = 1.0 - float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * penalty
     health = max(0.0, min(1.0, float(health)))
-    players.sort(key=lambda p: p.raw_impact, reverse=True)
+    players.sort(key=lambda x: x.raw_impact, reverse=True)
     return health, players
 
 

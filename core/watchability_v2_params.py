@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-# --- Player tiering (impact) ---
-
-TIER1_RELATIVE_IMPACT_THRESHOLD = 0.90
-TIER2_RELATIVE_IMPACT_THRESHOLD = 0.75
-
-TIER1_WEIGHT = 0.10
-TIER2_WEIGHT = 0.05
-
 # Raw player impact = PTS + AST + REB (per game).
+
+# Show "key injuries" only for high share-of-impact players.
+KEY_INJURY_IMPACT_SHARE_THRESHOLD = 0.1
+
+# Scales how much injuries affect adjusted quality (health score).
+# health = 1 - INJURY_OVERALL_IMPORTANCE_WEIGHT * sum(injury_weight * impact_share)
+INJURY_OVERALL_IMPORTANCE_WEIGHT = 0.5
 
 # --- Injury availability weights ---
 
@@ -25,4 +24,3 @@ IMPORTANCE_CEILING = 1.0
 # --- CES aggregation ---
 
 SIGMA = 0.8  # ρ = (σ - 1) / σ
-
