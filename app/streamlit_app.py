@@ -17,6 +17,8 @@ render_full_dashboard(
     title="NBA Watchability Today",
     caption=(
         "NBA Watchability ranks tonight’s games by how worth watching they are, "
-        "using expected closeness + team quality (injury-adjusted)."
+        "using expected competitiveness and team quality (injury-adjusted). "
+        " "
+        " "
     ),
 )
