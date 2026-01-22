@@ -38,6 +38,8 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-row {display:flex; align-items:center; gap:12px; padding:8px 4px; border-bottom: 1px solid rgba(49,51,63,0.12);}
 .menu-awi {width:110px;}
 .menu-awi .score {font-size: 24px; font-weight: 700; line-height: 1.05;}
+.menu-awi .subscores {margin-top: 2px; font-size: 12px; color: rgba(49,51,63,0.75); line-height: 1.15;}
+.menu-awi .subscore {display:block;}
 .menu-awi .label {font-size: 14px; color: rgba(49,51,63,0.7); line-height: 1.2;}
 .live-badge {color: #d62728; font-weight: 700; font-size: 13px; margin-top: 2px;}
 .live-time {color: #d62728; font-size: 13px; line-height: 1.1; margin-top: 2px;}
@@ -827,6 +829,12 @@ def render_chart(
 def _render_menu_row(r) -> str:
     awi_score = int(round(float(r["aWI"])))
     label = py_html.escape(str(r["Region"]))
+    q = r.get("Team quality")
+    c = r.get("Closeness")
+    q_score = None if q is None else 100.0 * float(q)
+    c_score = None if c is None else 100.0 * float(c)
+    q_str = "—" if q_score is None else str(int(round(q_score)))
+    c_str = "—" if c_score is None else str(int(round(c_score)))
 
     live_badge = ""
     if bool(r.get("Is live", False)):
@@ -880,6 +888,10 @@ def _render_menu_row(r) -> str:
     return f"""<div class="menu-row">
 <div class="menu-awi">
 <div class="score">{awi_score} WI</div>
+<div class="subscores">
+<span class="subscore">Competitiveness {c_str}</span>
+<span class="subscore">Adj Quality {q_str}</span>
+</div>
 <div class="label">{label}</div>
 {live_badge}
 </div>
