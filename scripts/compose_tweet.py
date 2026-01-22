@@ -117,8 +117,8 @@ def _bucket_summary() -> str | None:
     x4 = counts["Skippable"]
     x5 = counts["Hard Skip"]
     return (
-        f"{x1} Must Watch Games, {x2} Strong Watch Games, {x3} Watchable Games, "
-        f"{x4} Skippable Games and {x5} Hard Skip Games"
+        f"{x1} Must Watch Game(s), {x2} Strong Watch Game(s), {x3} Watchable Game(s), "
+        f"{x4} Skippable Game(s) and {x5} Hard Skip Game(s)"
     )
 
 def compose_tweet_text():

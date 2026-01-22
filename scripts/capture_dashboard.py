@@ -17,15 +17,15 @@ TABLE_IMG = OUT_DIR / "table.png"
 
 # --- Chart crop (historical defaults) ---
 CHART_LEFT_PAD = int(os.getenv("CHART_LEFT_PAD", "125"))
-CHART_TOP_PAD = int(os.getenv("CHART_TOP_PAD", "775"))
+CHART_TOP_PAD = int(os.getenv("CHART_TOP_PAD", "600"))
 CHART_RIGHT_PAD = int(os.getenv("CHART_RIGHT_PAD", "1900"))
-CHART_BOTTOM_PAD = int(os.getenv("CHART_BOTTOM_PAD", "250"))
+CHART_BOTTOM_PAD = int(os.getenv("CHART_BOTTOM_PAD", "350"))
 
 # --- Table crop (tweak as needed) ---
 TABLE_LEFT_PAD = int(os.getenv("TABLE_LEFT_PAD", "2000"))
-TABLE_TOP_PAD = int(os.getenv("TABLE_TOP_PAD", "760"))
+TABLE_TOP_PAD = int(os.getenv("TABLE_TOP_PAD", "780"))
 TABLE_RIGHT_PAD = int(os.getenv("TABLE_RIGHT_PAD", "125"))
-TABLE_BOTTOM_PAD = int(os.getenv("TABLE_BOTTOM_PAD", "250"))
+TABLE_BOTTOM_PAD = int(os.getenv("TABLE_BOTTOM_PAD", "230"))
 
 
 def capture_dashboard():
