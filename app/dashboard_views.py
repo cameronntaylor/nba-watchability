@@ -17,7 +17,7 @@ from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps
-from core.team_meta import get_logo_url
+from core.team_meta import get_logo_url, get_team_abbr
 from core.health_espn import compute_team_player_impacts, injury_weight
 from core.importance import compute_importance_detail_map
 from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
@@ -37,8 +37,10 @@ div[data-testid="collapsedControl"] {display: none;}
 .block-container {padding-top: 1rem; padding-bottom: 1rem;}
 .menu-row {display:flex; align-items:center; gap:12px; padding:8px 4px; border-bottom: 1px solid rgba(49,51,63,0.12);}
 .menu-awi {width:110px;}
-.menu-awi .score {font-size: 24px; font-weight: 700; line-height: 1.05;}
-.menu-awi .label {font-size: 14px; color: rgba(49,51,63,0.7); line-height: 1.2;}
+.menu-awi .score {font-size: 14px; font-weight: 650; line-height: 1.15; word-break: break-word;}
+.menu-awi .subscores {margin-top: 2px; font-size: 12px; color: rgba(49,51,63,0.75); line-height: 1.15;}
+.menu-awi .subscore {display:block;}
+.menu-awi .label {font-size: 18px; font-weight: 800; color: rgba(0,0,0,0.90); line-height: 1.15;}
 .live-badge {color: #d62728; font-weight: 700; font-size: 13px; margin-top: 2px;}
 .live-time {color: #d62728; font-size: 13px; line-height: 1.1; margin-top: 2px;}
 .menu-teams {flex: 1; display:flex; align-items:center; gap:10px; min-width: 240px;}
@@ -82,6 +84,39 @@ div[data-testid="collapsedControl"] {display: none;}
 }
 .menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
+
+/* Small "info" hover icon next to the dashboard caption. */
+.info-icon {display:inline-flex; align-items:center; justify-content:center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid rgba(49,51,63,0.25); color: rgba(49,51,63,0.8); font-size: 13px; font-weight: 700;}
+.info-icon[data-tooltip] {cursor: pointer; position: relative;}
+.caption-row {display: inline-flex; align-items: center; gap: 10px;}
+.caption-text {color: rgba(49,51,63,0.6); font-size: 0.9rem; line-height: 1.25;}
+.caption-spacer {height: 14px;}
+.info-icon[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  top: 130%;
+  z-index: 9999;
+  width: 340px;
+  white-space: pre-line;
+  background: rgba(255,255,255,0.98);
+  color: rgba(49,51,63,0.95);
+  border: 1px solid rgba(49,51,63,0.20);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.info-icon[data-tooltip]:hover::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 115%;
+  border-width: 6px;
+  border-style: solid;
+  border-color: transparent transparent rgba(49,51,63,0.20) transparent;
+}
 
 /* Mobile layout: prevent overlap by stacking meta below matchup. */
 @media (max-width: 640px) {
@@ -330,6 +365,7 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
         )
 
     local_tz = tz.gettz("America/Los_Angeles")
+    et_tz = tz.gettz("America/New_York")
     importance_detail = compute_importance_detail_map(detail_map)
 
     team_names = sorted({g.home_team for g in games} | {g.away_team for g in games})
@@ -362,20 +398,27 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
         if g.commence_time_utc:
             dt_utc = dtparser.isoparse(g.commence_time_utc)
             dt_local = dt_utc.astimezone(local_tz)
+            dt_et = dt_utc.astimezone(et_tz) if et_tz else None
             local_date = dt_local.date()
             day_name = dt_local.strftime("%A")
             tip_local = dt_local.strftime("%a %I:%M %p")
             tip_short = dt_local.strftime("%a %I%p").replace(" 0", " ")
+            tip_et = dt_et.strftime("%a %I:%M %p") if dt_et else "Unknown"
         else:
             local_date = None
             day_name = "Unknown"
             tip_local = "Unknown"
             tip_short = "?"
+            tip_et = "Unknown"
+            dt_local = None
 
         rows.append(
             {
                 "Tip (PT)": tip_local,
+                "Tip (ET)": tip_et,
                 "Tip short": tip_short,
+                "Tip dt (PT)": dt_local,
+                "Tip dt (ET)": dt_et,
                 "Local date": local_date,
                 "Day": day_name,
                 "Matchup": f"{g.away_team} @ {g.home_team}",
@@ -576,13 +619,13 @@ def render_chart(
             selected = selected_date if selected_date in date_options else date_options[0]
         df_plot = df[df["Local date"].astype(str) == selected].copy()
 
-    region_order = ["Amazing game", "Great game", "Good game", "Ok game", "Bad game"]
+    region_order = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
     region_colors = {
-        "Amazing game": "#1f77b4",
-        "Great game": "#2ca02c",
-        "Good game": "#ff7f0e",
-        "Ok game": "#9467bd",
-        "Bad game": "#7f7f7f",
+        "Must Watch": "#1f77b4",
+        "Strong Watch": "#2ca02c",
+        "Watchable": "#ff7f0e",
+        "Skippable": "#9467bd",
+        "Hard Skip": "#7f7f7f",
     }
 
     step = 0.02
@@ -607,7 +650,7 @@ def render_chart(
 
     regions_other = (
         alt.Chart(regions_df)
-        .transform_filter(alt.datum.Region != "Bad game")
+        .transform_filter(alt.datum.Region != "Hard Skip")
         .mark_rect(opacity=0.10)
         .encode(
             x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
@@ -626,8 +669,8 @@ def render_chart(
 
     regions_bad = (
         alt.Chart(regions_df)
-        .transform_filter(alt.datum.Region == "Bad game")
-        .mark_rect(opacity=0.15, color=region_colors["Bad game"])
+        .transform_filter(alt.datum.Region == "Hard Skip")
+        .mark_rect(opacity=0.15, color=region_colors["Hard Skip"])
         .encode(
             x=alt.X("q:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
             x2="q2:Q",
@@ -644,7 +687,7 @@ def render_chart(
             "Team quality:Q",
             scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]),
             axis=alt.Axis(
-                title="Adj Team Quality",
+                title="Team Quality",
                 format=".2f",
                 titleColor="rgba(0,0,0,0.9)",
                 titleFontSize=18,
@@ -673,11 +716,11 @@ def render_chart(
 
     region_labels_df = pd.DataFrame(
         [
-            {"label": "Amazing", "x": 0.93, "y": 0.93},
-            {"label": "Great game", "x": 0.82, "y": 0.82},
-            {"label": "Good game", "x": 0.60, "y": 0.60},
-            {"label": "Ok game", "x": 0.4, "y": 0.4},
-            {"label": "Bad game", "x": 0.2, "y": 0.2},
+            {"label": "Must Watch", "x": 0.93, "y": 0.93},
+            {"label": "Strong Watch", "x": 0.80, "y": 0.82},
+            {"label": "Watchable", "x": 0.60, "y": 0.60},
+            {"label": "Skippable", "x": 0.40, "y": 0.40},
+            {"label": "Hard Skip", "x": 0.20, "y": 0.20},
         ]
     )
     region_text = alt.Chart(region_labels_df).mark_text(
@@ -693,7 +736,7 @@ def render_chart(
     )
 
     x_axis_label_df = pd.DataFrame(
-        [{"text": "Adj Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
+        [{"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
     )
     x_axis_label_text = alt.Chart(x_axis_label_df).mark_text(
         dy=78,
@@ -727,7 +770,7 @@ def render_chart(
 
     game_tooltip = [
         alt.Tooltip("Matchup:N"),
-        alt.Tooltip("aWI:Q", title="WI", format=".1f"),
+        alt.Tooltip("aWI:Q", title="Watchability", format=".1f"),
         alt.Tooltip("Region:N"),
         alt.Tooltip("Tip (PT):N"),
         alt.Tooltip("Home spread:Q"),
@@ -810,6 +853,26 @@ def render_chart(
         tooltip=game_tooltip,
     )
 
+    chart_legend_df = pd.DataFrame(
+        [
+            {"text": "↗ Better games (high quality + close)", "x": QUALITY_FLOOR + 0.01, "y": CLOSENESS_FLOOR + 0.08},
+            {"text": "↙ Less watchable", "x": QUALITY_FLOOR + 0.01, "y": CLOSENESS_FLOOR + 0.03},
+        ]
+    )
+    chart_legend = alt.Chart(chart_legend_df).mark_text(
+        align="left",
+        baseline="top",
+        fontSize=12,
+        fontWeight=600,
+        color="rgba(49,51,63,0.70)",
+        opacity=0.95,
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("text:N"),
+        tooltip=[],
+    )
+
     chart = (
         axes
         + regions
@@ -820,6 +883,7 @@ def render_chart(
         + hit_targets
         + images
         + tips
+        + chart_legend
     ).resolve_scale(x="shared", y="shared").properties(height=560)
     st.altair_chart(chart, use_container_width=True)
 
@@ -827,6 +891,13 @@ def render_chart(
 def _render_menu_row(r) -> str:
     awi_score = int(round(float(r["aWI"])))
     label = py_html.escape(str(r["Region"]))
+
+    q = r.get("Team quality")
+    c = r.get("Closeness")
+    q_score = None if q is None else 100.0 * float(q)
+    c_score = None if c is None else 100.0 * float(c)
+    q_str = "—" if q_score is None else str(int(round(q_score)))
+    c_str = "—" if c_score is None else str(int(round(c_score)))
 
     live_badge = ""
     if bool(r.get("Is live", False)):
@@ -845,9 +916,21 @@ def _render_menu_row(r) -> str:
 
     away = py_html.escape(str(r["Away team"]))
     home = py_html.escape(str(r["Home team"]))
-    tip = py_html.escape(str(r["Tip (PT)"]))
+    dt_pt = r.get("Tip dt (PT)")
+    dt_et = r.get("Tip dt (ET)")
+    if dt_pt is not None and dt_et is not None:
+        dow = dt_pt.strftime("%a")
+        pt_time = dt_pt.strftime("%I:%M%p").replace(" 0", " ").replace("AM", "am").replace("PM", "pm").lstrip("0")
+        et_time = dt_et.strftime("%I:%M%p").replace("AM", "am").replace("PM", "pm").lstrip("0")
+        tip_line = f"Tip {dow} {pt_time} PT / {et_time} ET"
+    else:
+        tip_pt = str(r.get("Tip (PT)", "Unknown"))
+        tip_et = str(r.get("Tip (ET)", "Unknown"))
+        tip_line = f"Tip {tip_pt} PT / {tip_et} ET"
+    tip_line = py_html.escape(tip_line)
     spread = r["Home spread"]
-    spread_str = "?" if spread is None else f"{float(spread):g}"
+    home_abbr = get_team_abbr(str(r.get("Home team", ""))) or str(r.get("Home team", ""))[:3].upper()
+    spread_str = "?" if spread is None else f"{home_abbr} {float(spread):+g}"
     record_away = py_html.escape(str(r.get("Record (away)", "—")))
     record_home = py_html.escape(str(r.get("Record (home)", "—")))
     health_away = r.get("Health (away)")
@@ -879,8 +962,12 @@ def _render_menu_row(r) -> str:
     # Avoid leading indentation/newlines: Streamlit Markdown can render it as a code block.
     return f"""<div class="menu-row">
 <div class="menu-awi">
-<div class="score">{awi_score} WI</div>
 <div class="label">{label}</div>
+<div class="score">Watchability {awi_score}</div>
+<div class="subscores">
+<span class="subscore">Competitiveness {c_str}</span>
+<span class="subscore">Team Quality {q_str}</span>
+</div>
 {live_badge}
 </div>
 <div class="menu-matchup">
@@ -898,23 +985,35 @@ def _render_menu_row(r) -> str:
 </div>
 </div>
 <div class="menu-meta">
-<div>Tip: {tip}</div>
+<div>{tip_line}</div>
 <div>Spread: {spread_str}</div>
 </div>
 </div>"""
 
 
 def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[str]) -> None:
+    sort_mode = st.segmented_control("Sort", options=["Watchability", "Tip time"], default="Watchability")
+    sort_mode = sort_mode or "Watchability"
+
     if date_options:
         for local_date, day_name in df_dates.itertuples(index=False, name=None):
             st.markdown(f"**{py_html.escape(str(day_name))}**")
             st.divider()
-            day_df = df[df["Local date"] == local_date].sort_values("aWI", ascending=False)
+            day_df = df[df["Local date"] == local_date].copy()
+            if sort_mode == "Tip time" and "Tip dt (PT)" in day_df.columns:
+                day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
+            else:
+                day_df = day_df.sort_values("aWI", ascending=False)
             for _, row in day_df.iterrows():
                 st.markdown(_render_menu_row(row), unsafe_allow_html=True)
             st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
     else:
-        for _, row in df.iterrows():
+        flat = df.copy()
+        if sort_mode == "Tip time" and "Tip dt (PT)" in flat.columns:
+            flat = flat.sort_values("Tip dt (PT)", ascending=True, na_position="last")
+        else:
+            flat = flat.sort_values("aWI", ascending=False)
+        for _, row in flat.iterrows():
             st.markdown(_render_menu_row(row), unsafe_allow_html=True)
 
 
@@ -923,7 +1022,21 @@ def render_full_dashboard(title: str, caption: str) -> None:
     inject_autorefresh()
 
     st.title(title)
-    st.caption(caption)
+    info_text = (
+        "How it works\n"
+        "• Competitiveness: based on the betting spread (smaller spread = closer game).\n"
+        "• Team quality: based on team strength, adjusted for key injuries.\n"
+        "• Output: a single Watchability score + simple labels (Must Watch → Hard Skip).\n"
+        "• Updates live: watchability can change as the score stays close (or blows out)."
+    )
+    info_attr = py_html.escape(info_text).replace("\n", "&#10;")
+    cap_text = py_html.escape(caption)
+    st.markdown(
+        f"<div class='caption-row'><span class='caption-text'>{cap_text}</span>"
+        f"<span class='info-icon' data-tooltip=\"{info_attr}\">i</span></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div class='caption-spacer'></div>", unsafe_allow_html=True)
 
     df, df_dates, date_options, date_to_label = build_dashboard_frames()
 

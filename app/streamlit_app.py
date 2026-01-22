@@ -14,13 +14,11 @@ from app.dashboard_views import render_full_dashboard
 st.set_page_config(page_title="NBA Watchability (WI)", layout="wide", initial_sidebar_state="collapsed")
 
 render_full_dashboard(
-    title="What to watch? NBA Watchability Today",
+    title="NBA Watchability Today",
     caption=(
-        "The Watchability Index (WI) quantifies the watchability of an NBA game by combining "
-        "the competitiveness and quality of teams playing, adjusted for injuries. WI also updates during live games accounting "
-        "for the evolving competitiveness of the game. WI goes from 0 to 100 and is broken into Amazing, Great, Good, Ok, and Bad "
-        "buckets to help users understand and contextualize the relative watchability of games. "
-        "Future versions of the metric will let users personalize based on their "
-        "preferences over competitiveness and team and player quality."
+        "NBA Watchability ranks tonight’s games by how worth watching they are, "
+        "using expected competitiveness and team quality (injury-adjusted). "
+        " "
+        " "
     ),
 )

@@ -104,14 +104,14 @@ def awi(team_quality_: float, closeness_: float) -> float:
 def awi_label(awi_: float) -> str:
     x = float(awi_)
     if x >= 90:
-        return "Amazing game"
+        return "Must Watch"
     if x >= 75:
-        return "Great game"
+        return "Strong Watch"
     if x >= 50:
-        return "Good game"
+        return "Watchable"
     if x >= 25:
-        return "Ok game"
-    return "Bad game"
+        return "Skippable"
+    return "Hard Skip"
 
 
 @dataclass(frozen=True)

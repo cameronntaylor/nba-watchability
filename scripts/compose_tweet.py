@@ -20,9 +20,11 @@ from core.importance import compute_importance_map
 import core.watchability as watch
 
 
-def _avg_wi_summary() -> str | None:
+def _bucket_summary() -> str | None:
     """
-    Returns a short string like 'Avg WI: 62 (Good)' for today's PT slate.
+    Returns a short string like:
+    '2 Must Watch Games, 3 Strong Watch Games, 4 Watchable Games, 1 Skippable Games and 0 Hard Skip Games'
+    for today's PT slate.
     """
     local_tz = tz.gettz("America/Los_Angeles")
     today_local = date.today()
@@ -102,15 +104,28 @@ def _avg_wi_summary() -> str | None:
     if not wis:
         return None
 
-    avg_wi = sum(wis) / len(wis)
-    label = watch.awi_label(avg_wi).replace(" game", "")
-    return f"Avg Watchability Index: {avg_wi:.0f} ({label})"
+    buckets = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
+    counts = {b: 0 for b in buckets}
+    for wi in wis:
+        b = watch.awi_label(float(wi))
+        if b in counts:
+            counts[b] += 1
+
+    x1 = counts["Must Watch"]
+    x2 = counts["Strong Watch"]
+    x3 = counts["Watchable"]
+    x4 = counts["Skippable"]
+    x5 = counts["Hard Skip"]
+    return (
+        f"{x1} Must Watch Games, {x2} Strong Watch Games, {x3} Watchable Games, "
+        f"{x4} Skippable Games and {x5} Hard Skip Games"
+    )
 
 def compose_tweet_text():
     today = date.today().strftime("%b %d")
     avg_line = None
     try:
-        avg_line = _avg_wi_summary()
+        avg_line = _bucket_summary()
     except Exception:
         avg_line = None
 
@@ -118,5 +133,5 @@ def compose_tweet_text():
     if avg_line:
         parts.append(avg_line)
     parts.append("")
-    parts.append("What to watch tonight, ranked by Watchability Index (WI) (competitiveness + team quality).")
+    parts.append("What to watch tonight, ranked by Watchability (competitiveness + injury-adjusted team quality).")
     return "\n".join(parts)
