@@ -17,3 +17,6 @@ run_local.sh
 
 # Output
 output/
+output/logs/
+output/**/*.csv
+output/**/*.parquet
