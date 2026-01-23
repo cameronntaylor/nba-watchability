@@ -48,6 +48,10 @@ jobs:
       - name: Run bot and post tweet
         run: python scripts/run_bot.py
 
+      - name: Log daily Watchability scores
+        if: always()
+        run: python scripts/log_daily_scores.py
+
       - name: Upload screenshot artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -56,3 +60,12 @@ jobs:
           path: |
             output/chart.png
             output/table.png
+
+      - name: Upload daily logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchability-logs
+          path: |
+            output/logs/*.parquet
+            output/logs/*.csv

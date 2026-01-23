@@ -21,8 +21,14 @@ from core.team_meta import get_logo_url, get_team_abbr
 from core.health_espn import compute_team_player_impacts, injury_weight
 from core.importance import compute_importance_detail_map
 from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
+from core.build_watchability_df import build_watchability_df
 
 import core.watchability as watch
+
+
+@st.cache_data(ttl=60 * 10)  # 10 min (odds + injuries)
+def load_watchability_df(days_ahead: int = 2) -> pd.DataFrame:
+    return build_watchability_df(days_ahead=days_ahead)
 
 
 def inject_base_css() -> None:
@@ -356,105 +362,7 @@ def _fmt_m_d(d: dt.date) -> str:
 
 
 def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict[str, str]]:
-    games = load_games()
-    winpct_map, record_map, detail_map = load_standings()
-    if not winpct_map:
-        st.warning(
-            "Could not load standings from ESPN; win% will default to 0.5. "
-            "Try refreshing, or check your network connectivity."
-        )
-
-    local_tz = tz.gettz("America/Los_Angeles")
-    et_tz = tz.gettz("America/New_York")
-    importance_detail = compute_importance_detail_map(detail_map)
-
-    team_names = sorted({g.home_team for g in games} | {g.away_team for g in games})
-    team_impacts = load_team_impacts(tuple(team_names)) if team_names else {}
-
-    rows = []
-    for g in games:
-        w_home_raw = get_win_pct(g.home_team, winpct_map, default=0.5)
-        w_away_raw = get_win_pct(g.away_team, winpct_map, default=0.5)
-
-        home_key = _normalize_team_name(g.home_team)
-        away_key = _normalize_team_name(g.away_team)
-
-        imp_home = float(importance_detail.get(home_key, {}).get("importance", 0.1))
-        imp_away = float(importance_detail.get(away_key, {}).get("importance", 0.1))
-        game_importance = 0.5 * (imp_home + imp_away)
-
-        seed_radius_home = importance_detail.get(home_key, {}).get("seed_radius")
-        seed_radius_away = importance_detail.get(away_key, {}).get("seed_radius")
-        playoff_radius_home = importance_detail.get(home_key, {}).get("playoff_radius")
-        playoff_radius_away = importance_detail.get(away_key, {}).get("playoff_radius")
-
-        w_home_rec, l_home_rec = get_record(g.home_team, record_map)
-        w_away_rec, l_away_rec = get_record(g.away_team, record_map)
-        home_record = "—" if (w_home_rec is None or l_home_rec is None) else f"{w_home_rec}-{l_home_rec}"
-        away_record = "—" if (w_away_rec is None or l_away_rec is None) else f"{w_away_rec}-{l_away_rec}"
-
-        abs_spread = None if g.home_spread is None else abs(float(g.home_spread))
-
-        if g.commence_time_utc:
-            dt_utc = dtparser.isoparse(g.commence_time_utc)
-            dt_local = dt_utc.astimezone(local_tz)
-            dt_et = dt_utc.astimezone(et_tz) if et_tz else None
-            local_date = dt_local.date()
-            day_name = dt_local.strftime("%A")
-            tip_local = dt_local.strftime("%a %I:%M %p")
-            tip_short = dt_local.strftime("%a %I%p").replace(" 0", " ")
-            tip_et = dt_et.strftime("%a %I:%M %p") if dt_et else "Unknown"
-        else:
-            local_date = None
-            day_name = "Unknown"
-            tip_local = "Unknown"
-            tip_short = "?"
-            tip_et = "Unknown"
-            dt_local = None
-
-        rows.append(
-            {
-                "Tip (PT)": tip_local,
-                "Tip (ET)": tip_et,
-                "Tip short": tip_short,
-                "Tip dt (PT)": dt_local,
-                "Tip dt (ET)": dt_et,
-                "Local date": local_date,
-                "Day": day_name,
-                "Matchup": f"{g.away_team} @ {g.home_team}",
-                "Away team": g.away_team,
-                "Home team": g.home_team,
-                "Away logo": get_logo_url(g.away_team) or "",
-                "Home logo": get_logo_url(g.home_team) or "",
-                "Home spread": g.home_spread,
-                "|spread|": abs_spread,
-                "Record (away)": away_record,
-                "Record (home)": home_record,
-                "Team quality": None,
-                "Closeness": None,
-                "Importance": game_importance,
-                "Importance (home)": imp_home,
-                "Importance (away)": imp_away,
-                "Seed radius (home)": seed_radius_home,
-                "Seed radius (away)": seed_radius_away,
-                "Playoff radius (home)": playoff_radius_home,
-                "Playoff radius (away)": playoff_radius_away,
-                "Uavg": None,
-                "aWI": None,
-                "Region": None,
-                "Spread source": g.spread_source,
-                "Win% (away raw)": float(w_away_raw),
-                "Win% (home raw)": float(w_home_raw),
-                "Adj win% (away)": float(w_away_raw),
-                "Adj win% (home)": float(w_home_raw),
-                "Health (away)": 1.0,
-                "Health (home)": 1.0,
-                "Away Key Injuries": "",
-                "Home Key Injuries": "",
-            }
-        )
-
-    df = pd.DataFrame(rows)
+    df = load_watchability_df(days_ahead=2)
     if df.empty:
         st.warning("No games returned from Odds API. (Off day? API issue? Check your key/limits.)")
         st.stop()
@@ -470,124 +378,6 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
         d.isoformat(): f"{day} {_fmt_m_d(d)}"
         for d, day in df_dates.itertuples(index=False, name=None)
     }
-
-    game_map = load_espn_game_map(tuple(date_options))
-
-    if date_options:
-        def _lookup_game(r, key: str):
-            iso = str(r["Local date"])
-            home = _normalize_team_name(str(r["Home team"]))
-            away = _normalize_team_name(str(r["Away team"]))
-            rec = game_map.get(
-                (iso, home, away)
-            )
-            if not rec:
-                return None
-            return rec.get(key)
-
-        df["Status"] = df.apply(lambda r: _lookup_game(r, "state") or "pre", axis=1)
-        df["ESPN game id"] = df.apply(lambda r: _lookup_game(r, "game_id"), axis=1)
-        df["Away score"] = df.apply(lambda r: _lookup_game(r, "away_score"), axis=1)
-        df["Home score"] = df.apply(lambda r: _lookup_game(r, "home_score"), axis=1)
-        df["Time remaining"] = df.apply(lambda r: _lookup_game(r, "time_remaining"), axis=1)
-    else:
-        df["Status"] = "pre"
-        df["ESPN game id"] = None
-        df["Away score"] = None
-        df["Home score"] = None
-        df["Time remaining"] = None
-
-    df["Is live"] = df["Status"] == "in"
-
-    def _tip_display(r) -> str:
-        if not bool(r["Is live"]):
-            return str(r["Tip short"])
-        away = r.get("Away score")
-        home = r.get("Home score")
-        tr = r.get("Time remaining")
-        if away is None or home is None:
-            return f"🚨 LIVE{(' ' + str(tr)) if tr else ''}"
-        return f"🚨 {int(away)}-{int(home)}{(' ' + str(tr)) if tr else ''}"
-
-    df["Tip display"] = df.apply(_tip_display, axis=1)
-
-    # Remove finished games from both views.
-    df = df[df["Status"] != "post"].copy()
-
-    # Load per-game injury reports (matchup-specific) from ESPN summary API.
-    game_ids = tuple(sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()}))
-    injury_reports = load_espn_game_injury_report_map(game_ids) if game_ids else {}
-
-    def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str]:
-        players = team_impacts.get(team_key, {}).get("players", [])
-        by_team = injury_reports.get(str(game_id or ""), {}).get(team_key, {})
-
-        penalty = 0.0
-        injured_players = []
-        for p in players:
-            pid = str(p.get("id") or "")
-            name = str(p.get("name") or "")
-            share = float(p.get("share") or 0.0)
-            raw = float(p.get("raw") or 0.0)
-            st = by_team.get(pid)
-            if not st:
-                continue
-            st_norm = _normalize_status_for_display(st)
-            penalty += float(injury_weight(st_norm)) * float(share)
-            injured_players.append((raw, share, f"{name}: {st_norm}"))
-
-        health = 1.0 - float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * penalty
-        health = max(0.0, min(1.0, float(health)))
-        injured_players.sort(key=lambda x: x[0], reverse=True)
-        key_injuries = [s for _, share, s in injured_players if float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD]
-        return health, ", ".join(key_injuries)
-
-    injury_info_cache: dict[tuple[str, str], tuple[float, str]] = {}
-
-    def _memo_team_injury_info(team_key: str, game_id: str | None) -> tuple[float, str]:
-        k = (team_key, str(game_id or ""))
-        if k in injury_info_cache:
-            return injury_info_cache[k]
-        v = _team_key_injuries_and_health(team_key, game_id)
-        injury_info_cache[k] = v
-        return v
-
-    df["Health (away)"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[0], axis=1
-    )
-    df["Health (home)"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[0], axis=1
-    )
-    df["Away Key Injuries"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[1] or "",
-        axis=1,
-    )
-    df["Home Key Injuries"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[1] or "",
-        axis=1,
-    )
-
-    df["Adj win% (away)"] = df["Win% (away raw)"].astype(float) * df["Health (away)"].astype(float)
-    df["Adj win% (home)"] = df["Win% (home raw)"].astype(float) * df["Health (home)"].astype(float)
-
-    def _compute_watchability_row(r) -> pd.Series:
-        w = watch.compute_watchability(
-            float(r["Adj win% (home)"]),
-            float(r["Adj win% (away)"]),
-            r["|spread|"],
-        )
-        return pd.Series(
-            {
-                "Team quality": w.team_quality,
-                "Closeness": w.closeness,
-                "Uavg": w.uavg,
-                "aWI": w.awi,
-                "Region": w.label,
-            }
-        )
-
-    df[["Team quality", "Closeness", "Uavg", "aWI", "Region"]] = df.apply(_compute_watchability_row, axis=1)
-    df = df.sort_values("aWI", ascending=False).reset_index(drop=True)
 
     return df, df_dates, date_options, date_to_label
 

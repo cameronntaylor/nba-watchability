@@ -134,4 +134,5 @@ def compose_tweet_text():
         parts.append(avg_line)
     parts.append("")
     parts.append("What to watch tonight, ranked by Watchability (competitiveness + injury-adjusted team quality).")
+    parts.append("See the full dashboard: https://nba-watchability.streamlit.app/")
     return "\n".join(parts)
