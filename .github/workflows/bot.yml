@@ -7,8 +7,8 @@ on:
     # Run at 20:00 UTC Monday-Friday.
     - cron: "0 20 * * 1-5"
 
-    # Run at 18:00 UTC Saturday-Sunday.
-    - cron: "0 18 * * 6,0"
+    # Run at 17:00 UTC Saturday-Sunday.
+    - cron: "0 17 * * 6,0"
 
 jobs:
   run-bot:
