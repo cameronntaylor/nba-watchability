@@ -7,7 +7,7 @@ KEY_INJURY_IMPACT_SHARE_THRESHOLD = 0.1
 
 # Scales how much injuries affect adjusted quality (health score).
 # health = 1 - INJURY_OVERALL_IMPORTANCE_WEIGHT * sum(injury_weight * impact_share)
-INJURY_OVERALL_IMPORTANCE_WEIGHT = 0.5
+INJURY_OVERALL_IMPORTANCE_WEIGHT = 0.6
 
 # --- Injury availability weights ---
 
