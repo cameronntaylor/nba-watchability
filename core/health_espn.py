@@ -193,6 +193,10 @@ class PlayerImpact:
     athlete_id: str
     name: str
     points_per_game: float
+    assists_per_game: float
+    rebounds_per_game: float
+    steals_per_game: float
+    blocks_per_game: float
     raw_impact: float
     impact_share: float
     relative_raw_impact: float
@@ -228,32 +232,36 @@ def compute_team_player_impacts(
     if not roster:
         return []
 
-    impacts_raw: List[Tuple[str, str, float, float, str]] = []
+    impacts_raw: List[Tuple[str, str, float, float, float, float, float, str]] = []
     for athlete_id, athlete_name, roster_status in roster:
         try:
-            pts, ast, reb = fetch_athlete_per_game_stats(
+            pts, ast, reb, stl, blk = fetch_athlete_per_game_stats(
                 athlete_id, season_year=year, season_type=season_type, ttl_seconds=stats_ttl_seconds
             )
         except requests.HTTPError:
             continue
         except Exception:
             continue
-        if pts is None and ast is None and reb is None:
+        if pts is None and ast is None and reb is None and stl is None and blk is None:
             continue
         pts_f = float(pts or 0.0)
+        ast_f = float(ast or 0.0)
+        reb_f = float(reb or 0.0)
+        stl_f = float(stl or 0.0)
+        blk_f = float(blk or 0.0)
         raw = float(pts or 0.0) + float(ast or 0.0) + float(reb or 0.0)
-        impacts_raw.append((athlete_id, athlete_name, pts_f, raw, roster_status or "Available"))
+        impacts_raw.append((athlete_id, athlete_name, pts_f, ast_f, reb_f, stl_f, blk_f, raw, roster_status or "Available"))
 
     if not impacts_raw:
         return []
 
-    sum_raw = sum(r for _, _, _, r, _ in impacts_raw) or 0.0
-    max_raw = max(r for _, _, _, r, _ in impacts_raw) or 0.0
+    sum_raw = sum(r for _, _, _, _, _, _, _, r, _ in impacts_raw) or 0.0
+    max_raw = max(r for _, _, _, _, _, _, _, r, _ in impacts_raw) or 0.0
     if sum_raw <= 0 or max_raw <= 0:
         return []
 
     players: List[PlayerImpact] = []
-    for athlete_id, athlete_name, pts_f, raw, status in impacts_raw:
+    for athlete_id, athlete_name, pts_f, ast_f, reb_f, stl_f, blk_f, raw, status in impacts_raw:
         share = raw / sum_raw if sum_raw else 0.0
         rel = raw / max_raw if max_raw else 0.0
         iw = _injury_weight(status)
@@ -262,6 +270,10 @@ def compute_team_player_impacts(
                 athlete_id=str(athlete_id),
                 name=str(athlete_name),
                 points_per_game=float(pts_f),
+                assists_per_game=float(ast_f),
+                rebounds_per_game=float(reb_f),
+                steals_per_game=float(stl_f),
+                blocks_per_game=float(blk_f),
                 raw_impact=float(raw),
                 impact_share=float(share),
                 relative_raw_impact=float(rel),
@@ -385,9 +397,9 @@ def fetch_athlete_per_game_stats(
     season_year: int,
     season_type: int = 2,
     ttl_seconds: int = 24 * 60 * 60,
-) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
     """
-    Returns (avg_points, avg_assists, avg_rebounds) for a given athlete id.
+    Returns (avg_points, avg_assists, avg_rebounds, avg_steals, avg_blocks) for a given athlete id.
 
     Uses sports.core API; values can be absent for some athletes.
     """
@@ -407,7 +419,9 @@ def fetch_athlete_per_game_stats(
     pts = _find_first_number(data, "avgPoints")
     ast = _find_first_number(data, "avgAssists")
     reb = _find_first_number(data, "avgRebounds")
-    return pts, ast, reb
+    stl = _find_first_number(data, "avgSteals")
+    blk = _find_first_number(data, "avgBlocks")
+    return pts, ast, reb, stl, blk
 
 
 def compute_team_health(
@@ -466,6 +480,10 @@ def compute_team_health(
                 athlete_id=p.athlete_id,
                 name=p.name,
                 points_per_game=p.points_per_game,
+                assists_per_game=p.assists_per_game,
+                rebounds_per_game=p.rebounds_per_game,
+                steals_per_game=p.steals_per_game,
+                blocks_per_game=p.blocks_per_game,
                 raw_impact=p.raw_impact,
                 impact_share=p.impact_share,
                 relative_raw_impact=p.relative_raw_impact,

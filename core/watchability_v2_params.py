@@ -18,9 +18,12 @@ INJURY_WEIGHT_OUT = 1.0
 
 # --- Star player bump (small additive win% boost) ---
 
-# star_factor = STAR_WINPCT_BUMP * ((top_player_ppg^2) / (STAR_PPG_DENOM^2)) * (1 - injury_weight(status))
-STAR_PPG_DENOM = 35.0
-STAR_WINPCT_BUMP = 0.05
+# star_raw = ((PPG + STAR_REB_WEIGHT*REB + STAR_AST_WEIGHT*AST + STL + BLK) / STAR_DENOM)**2
+# star_factor = STAR_WINPCT_BUMP * star_raw * (1 - injury_weight(status))
+STAR_DENOM = 50.0
+STAR_REB_WEIGHT = 0.7
+STAR_AST_WEIGHT = 0.7
+STAR_WINPCT_BUMP = 0.075
 
 # --- Importance ---
 
