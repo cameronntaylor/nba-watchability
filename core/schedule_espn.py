@@ -1,4 +1,4 @@
-import requests
+from core.http_cache import get_json_cached
 from dateutil import parser as dtparser
 
 ESPN_SCOREBOARD = (
@@ -29,9 +29,14 @@ def fetch_games_for_date(date):
     ymd = date.strftime("%Y%m%d")
     url = f"{ESPN_SCOREBOARD}?dates={ymd}"
 
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-    data = r.json()
+    resp = get_json_cached(
+        url,
+        namespace="espn",
+        cache_key=f"scoreboard:{ymd}",
+        ttl_seconds=60,
+        timeout_seconds=10,
+    )
+    data = resp.data
 
     games = []
     for event in data.get("events", []):

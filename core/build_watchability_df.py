@@ -4,12 +4,13 @@ import datetime as dt
 import json
 from typing import Any
 
+import concurrent.futures as cf
+import os
 import pandas as pd
-import requests
 from dateutil import parser as dtparser
 from dateutil import tz
 
-from core.health_espn import compute_team_player_impacts, injury_weight
+from core.health_espn import PlayerImpact, compute_team_player_impacts, injury_weight
 from core.http_cache import get_json_cached
 from core.importance import compute_importance_detail_map
 from core.odds_api import fetch_nba_spreads_window
@@ -113,10 +114,14 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
     """
     out: dict[str, dict[str, dict[str, str]]] = {}
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
-    for gid in game_ids:
-        gid_s = str(gid).strip()
-        if not gid_s:
-            continue
+
+    ids = [str(g).strip() for g in game_ids if str(g).strip()]
+    if not ids:
+        return out
+
+    max_workers = int(os.getenv("NBA_WATCH_SUMMARY_WORKERS", "8"))
+
+    def _fetch_one(gid_s: str) -> tuple[str, dict[str, dict[str, str]] | None]:
         try:
             resp = get_json_cached(
                 url,
@@ -128,11 +133,11 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
             )
             data = resp.data
         except Exception:
-            continue
+            return gid_s, None
 
         injuries = data.get("injuries") if isinstance(data, dict) else None
         if not isinstance(injuries, list):
-            continue
+            return gid_s, {}
 
         by_team: dict[str, dict[str, str]] = {}
         for block in injuries:
@@ -177,7 +182,17 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
                 m[athlete_id] = chosen
             by_team[team_key] = m
 
-        out[gid_s] = by_team
+        return gid_s, by_team
+
+    # Parallelize per-game summary fetches; this is the biggest cold-load hotspot.
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(_fetch_one, gid) for gid in ids]
+        for fut in cf.as_completed(futures):
+            gid_s, by_team = fut.result()
+            if by_team is None:
+                continue
+            out[gid_s] = by_team
+
     return out
 
 
@@ -198,7 +213,10 @@ def build_watchability_df(
     et_tz = tz.gettz("America/New_York")
 
     team_names = sorted({g.home_team for g in games} | {g.away_team for g in games})
-    team_impacts = { _normalize_team_name(n): compute_team_player_impacts(n) for n in team_names }
+    # Compute player impact shares lazily only for teams that have injuries in a specific matchup.
+    # This is a major performance win vs. computing for every team on every refresh.
+    team_name_by_key = { _normalize_team_name(n): n for n in team_names }
+    team_impacts: dict[str, list[PlayerImpact]] = {}
 
     rows: list[dict[str, Any]] = []
     for g in games:
@@ -341,9 +359,25 @@ def build_watchability_df(
     game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
     injury_reports = _load_espn_game_injury_report_map(game_ids) if game_ids else {}
 
+    teams_with_injuries: set[str] = set()
+    for _, by_team in injury_reports.items():
+        for team_key, inj in (by_team or {}).items():
+            if isinstance(inj, dict) and inj:
+                teams_with_injuries.add(str(team_key))
+
+    for team_key in sorted(teams_with_injuries):
+        team_name = team_name_by_key.get(team_key, team_key)
+        try:
+            team_impacts[team_key] = compute_team_player_impacts(team_name)
+        except Exception:
+            team_impacts[team_key] = []
+
     def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str]:
         players = team_impacts.get(team_key, []) or []
         by_team = injury_reports.get(str(game_id or ""), {}).get(team_key, {})
+
+        if not by_team:
+            return 1.0, ""
 
         penalty = 0.0
         injured_players: list[tuple[float, float, str]] = []
@@ -429,4 +463,3 @@ def build_watchability_sources_summary(df: pd.DataFrame) -> str:
         "generated_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     return json.dumps(payload, sort_keys=True)
-

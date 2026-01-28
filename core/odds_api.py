@@ -7,6 +7,7 @@ import requests
 from dateutil import parser as dtparser
 
 from core.config import ODDS_API_KEY, ODDS_BASE_URL, SPORT_KEY_NBA, DEFAULT_MARKETS, DEFAULT_REGIONS
+from core.http_cache import get_json_cached
 
 
 @dataclass
@@ -130,11 +131,29 @@ def fetch_nba_spreads_window(days_ahead: int = 2) -> List[GameOdds]:
     params_with_window["commenceTimeFrom"] = start_utc.isoformat().replace("+00:00", "Z")
     params_with_window["commenceTimeTo"] = end_utc.isoformat().replace("+00:00", "Z")
 
-    r = requests.get(url, params=params_with_window, timeout=20)
-    if r.status_code == 422:
-        r = requests.get(url, params=base_params, timeout=20)
-    r.raise_for_status()
-    data: List[Dict[str, Any]] = r.json()
+    data: List[Dict[str, Any]]
+    try:
+        resp = get_json_cached(
+            url,
+            params=params_with_window,
+            namespace="odds_api",
+            cache_key=f"nba_odds_window:{days_ahead}:{start_utc.isoformat()}:{end_utc.isoformat()}",
+            ttl_seconds=5 * 60,
+            timeout_seconds=20,
+        )
+        data = resp.data
+    except requests.HTTPError as e:
+        if getattr(e.response, "status_code", None) != 422:
+            raise
+        resp = get_json_cached(
+            url,
+            params=base_params,
+            namespace="odds_api",
+            cache_key="nba_odds_unfiltered",
+            ttl_seconds=5 * 60,
+            timeout_seconds=20,
+        )
+        data = resp.data
 
     games: List[GameOdds] = []
     for ev in data:

@@ -26,7 +26,7 @@ from core.build_watchability_df import build_watchability_df
 import core.watchability as watch
 
 
-@st.cache_data(ttl=60 * 10)  # 10 min (odds + injuries)
+@st.cache_data(ttl=60 * 5)  # 5 min (odds + injuries)
 def load_watchability_df(days_ahead: int = 2) -> pd.DataFrame:
     return build_watchability_df(days_ahead=days_ahead)
 

@@ -1,4 +1,4 @@
-import requests
+from core.http_cache import get_json_cached
 
 from core.standings import _normalize_team_name
 
@@ -52,9 +52,14 @@ def fetch_team_standings_maps():
       - winpct_map: name -> float (0..1)
       - record_map: name -> (wins:int, losses:int)
     """
-    r = requests.get(ESPN_STANDINGS_URL, timeout=10)
-    r.raise_for_status()
-    data = r.json()
+    resp = get_json_cached(
+        ESPN_STANDINGS_URL,
+        namespace="espn",
+        cache_key="standings:v2",
+        ttl_seconds=60 * 60,
+        timeout_seconds=10,
+    )
+    data = resp.data
 
     entries = _extract_entries(data)
     if not entries:
@@ -136,9 +141,14 @@ def fetch_team_standings_detail_maps():
       'conference': 'east'|'west'|None
     }
     """
-    r = requests.get(ESPN_STANDINGS_URL, timeout=10)
-    r.raise_for_status()
-    data = r.json()
+    resp = get_json_cached(
+        ESPN_STANDINGS_URL,
+        namespace="espn",
+        cache_key="standings:v2",
+        ttl_seconds=60 * 60,
+        timeout_seconds=10,
+    )
+    data = resp.data
 
     winpct_map = {}
     record_map = {}
