@@ -7,7 +7,7 @@ KEY_INJURY_IMPACT_SHARE_THRESHOLD = 0.1
 
 # Scales how much injuries affect adjusted quality (health score).
 # health = 1 - INJURY_OVERALL_IMPORTANCE_WEIGHT * sum(injury_weight * impact_share)
-INJURY_OVERALL_IMPORTANCE_WEIGHT = 0.5
+INJURY_OVERALL_IMPORTANCE_WEIGHT = 0.6
 
 # --- Injury availability weights ---
 
@@ -19,8 +19,8 @@ INJURY_WEIGHT_OUT = 1.0
 # --- Star player bump (small additive win% boost) ---
 
 # star_factor = STAR_WINPCT_BUMP * ((top_player_ppg^2) / (STAR_PPG_DENOM^2)) * (1 - injury_weight(status))
-STAR_PPG_DENOM = 40.0
-STAR_WINPCT_BUMP = 0.025
+STAR_PPG_DENOM = 35.0
+STAR_WINPCT_BUMP = 0.05
 
 # --- Importance ---
 

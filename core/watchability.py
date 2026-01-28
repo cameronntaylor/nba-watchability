@@ -10,7 +10,7 @@ SPREAD_CAP = 15
 SPREAD_MIN = 0.5
 
 # Best and worst possible win percentages bunched
-WIN_MAX = 0.66
+WIN_MAX = 0.7
 WIN_MIN = 0.2
 
 # Extra multiplier for quality and closeness
