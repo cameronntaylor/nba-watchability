@@ -21,6 +21,8 @@ from core.team_meta import get_logo_url
 from core.watchability_v2_params import (
     INJURY_OVERALL_IMPORTANCE_WEIGHT,
     KEY_INJURY_IMPACT_SHARE_THRESHOLD,
+    STAR_PPG_DENOM,
+    STAR_WINPCT_BUMP,
 )
 
 import core.watchability as watch
@@ -365,12 +367,30 @@ def build_watchability_df(
             if isinstance(inj, dict) and inj:
                 teams_with_injuries.add(str(team_key))
 
-    for team_key in sorted(teams_with_injuries):
-        team_name = team_name_by_key.get(team_key, team_key)
+    # Star/top-scorer map needed for all teams; compute impacts once per team (cached per-athlete stats).
+    # Keep this parallelized and rely on the disk HTTP cache to make warm loads fast.
+    star_workers = int(os.getenv("NBA_WATCH_STAR_WORKERS", "8"))
+    top_scorer: dict[str, tuple[str, str, float]] = {}
+
+    def _fetch_team(team_key: str, team_name: str) -> tuple[str, list[PlayerImpact]]:
         try:
-            team_impacts[team_key] = compute_team_player_impacts(team_name)
+            return team_key, compute_team_player_impacts(team_name)
         except Exception:
-            team_impacts[team_key] = []
+            return team_key, []
+
+    with cf.ThreadPoolExecutor(max_workers=star_workers) as ex:
+        futures = [
+            ex.submit(_fetch_team, team_key, team_name_by_key.get(team_key, team_key))
+            for team_key in sorted(team_name_by_key.keys())
+        ]
+        for fut in cf.as_completed(futures):
+            k, players = fut.result()
+            # Keep the full list only if we might need it for injury penalty breakdown.
+            if k in teams_with_injuries:
+                team_impacts[k] = players
+            if players:
+                p = max(players, key=lambda x: float(x.points_per_game))
+                top_scorer[k] = (p.athlete_id, p.name, float(p.points_per_game))
 
     def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str]:
         players = team_impacts.get(team_key, []) or []
@@ -428,8 +448,74 @@ def build_watchability_df(
         axis=1,
     )
 
+    # Baseline adjusted win% prior to star bump (health-adjusted only).
     df["Adj win% (away)"] = df["Win% (away raw)"].astype(float) * df["Health (away)"].astype(float)
     df["Adj win% (home)"] = df["Win% (home raw)"].astype(float) * df["Health (home)"].astype(float)
+    df["Adj win% (away) pre-star"] = df["Adj win% (away)"].astype(float)
+    df["Adj win% (home) pre-star"] = df["Adj win% (home)"].astype(float)
+    df["Avg adj win% pre-star"] = 0.5 * (df["Adj win% (away) pre-star"] + df["Adj win% (home) pre-star"])
+
+    def _star_factor(team_key: str, game_id: str | None) -> float:
+        top = top_scorer.get(team_key)
+        if not top:
+            return 0.0
+        athlete_id, _, ppg = top
+        # If the top scorer appears in the injury report, apply availability scaling.
+        status = injury_reports.get(str(game_id or ""), {}).get(team_key, {}).get(str(athlete_id))
+        status_norm = _normalize_status_for_display(status) if status else "Available"
+        availability = max(0.0, 1.0 - float(injury_weight(status_norm)))
+        ppg_f = float(ppg)
+        denom = float(STAR_PPG_DENOM)
+        curved = (ppg_f * ppg_f) / (denom * denom) if denom else 0.0
+        return float(STAR_WINPCT_BUMP) * float(curved) * availability
+
+    def _star_player_name(team_key: str) -> str:
+        top = top_scorer.get(team_key)
+        if not top:
+            return ""
+        _, name, _ = top
+        return str(name)
+
+    def _star_player_ppg(team_key: str) -> float:
+        top = top_scorer.get(team_key)
+        if not top:
+            return 0.0
+        _, _, ppg = top
+        return float(ppg)
+
+    def _star_display(team_key: str, game_id: str | None) -> str:
+        name = _star_player_name(team_key)
+        if not name:
+            return ""
+        f = _star_factor(team_key, game_id)
+        # Show as percentage points added to win% for readability.
+        return f"{name} +{(100.0 * float(f)):.1f}%"
+
+    df["Star factor (away)"] = df.apply(
+        lambda r: _star_factor(_normalize_team_name(r["Away team"]), r.get("ESPN game id")),
+        axis=1,
+    )
+    df["Star factor (home)"] = df.apply(
+        lambda r: _star_factor(_normalize_team_name(r["Home team"]), r.get("ESPN game id")),
+        axis=1,
+    )
+    df["Away Star Player"] = df.apply(lambda r: _star_player_name(_normalize_team_name(r["Away team"])), axis=1)
+    df["Home Star Player"] = df.apply(lambda r: _star_player_name(_normalize_team_name(r["Home team"])), axis=1)
+    df["Away Star PPG"] = df.apply(lambda r: _star_player_ppg(_normalize_team_name(r["Away team"])), axis=1)
+    df["Home Star PPG"] = df.apply(lambda r: _star_player_ppg(_normalize_team_name(r["Home team"])), axis=1)
+    df["Away Star Factor"] = df.apply(
+        lambda r: _star_display(_normalize_team_name(r["Away team"]), r.get("ESPN game id")),
+        axis=1,
+    )
+    df["Home Star Factor"] = df.apply(
+        lambda r: _star_display(_normalize_team_name(r["Home team"]), r.get("ESPN game id")),
+        axis=1,
+    )
+
+    # Add star factor as a small additive bump to win% (then clip to [0,1]).
+    df["Adj win% (away)"] = (df["Adj win% (away)"].astype(float) + df["Star factor (away)"].astype(float)).clip(0.0, 1.0)
+    df["Adj win% (home)"] = (df["Adj win% (home)"].astype(float) + df["Star factor (home)"].astype(float)).clip(0.0, 1.0)
+    df["Avg adj win% post-star"] = 0.5 * (df["Adj win% (away)"] + df["Adj win% (home)"])
 
     def _compute_watchability_row(r) -> pd.Series:
         w = watch.compute_watchability(

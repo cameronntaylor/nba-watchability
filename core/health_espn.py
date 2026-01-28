@@ -192,6 +192,7 @@ def fetch_athlete_status_refined(athlete_id: str, *, ttl_seconds: int = 10 * 60)
 class PlayerImpact:
     athlete_id: str
     name: str
+    points_per_game: float
     raw_impact: float
     impact_share: float
     relative_raw_impact: float
@@ -227,7 +228,7 @@ def compute_team_player_impacts(
     if not roster:
         return []
 
-    impacts_raw: List[Tuple[str, str, float, str]] = []
+    impacts_raw: List[Tuple[str, str, float, float, str]] = []
     for athlete_id, athlete_name, roster_status in roster:
         try:
             pts, ast, reb = fetch_athlete_per_game_stats(
@@ -239,19 +240,20 @@ def compute_team_player_impacts(
             continue
         if pts is None and ast is None and reb is None:
             continue
+        pts_f = float(pts or 0.0)
         raw = float(pts or 0.0) + float(ast or 0.0) + float(reb or 0.0)
-        impacts_raw.append((athlete_id, athlete_name, raw, roster_status or "Available"))
+        impacts_raw.append((athlete_id, athlete_name, pts_f, raw, roster_status or "Available"))
 
     if not impacts_raw:
         return []
 
-    sum_raw = sum(r for _, _, r, _ in impacts_raw) or 0.0
-    max_raw = max(r for _, _, r, _ in impacts_raw) or 0.0
+    sum_raw = sum(r for _, _, _, r, _ in impacts_raw) or 0.0
+    max_raw = max(r for _, _, _, r, _ in impacts_raw) or 0.0
     if sum_raw <= 0 or max_raw <= 0:
         return []
 
     players: List[PlayerImpact] = []
-    for athlete_id, athlete_name, raw, status in impacts_raw:
+    for athlete_id, athlete_name, pts_f, raw, status in impacts_raw:
         share = raw / sum_raw if sum_raw else 0.0
         rel = raw / max_raw if max_raw else 0.0
         iw = _injury_weight(status)
@@ -259,6 +261,7 @@ def compute_team_player_impacts(
             PlayerImpact(
                 athlete_id=str(athlete_id),
                 name=str(athlete_name),
+                points_per_game=float(pts_f),
                 raw_impact=float(raw),
                 impact_share=float(share),
                 relative_raw_impact=float(rel),
@@ -462,6 +465,7 @@ def compute_team_health(
             PlayerImpact(
                 athlete_id=p.athlete_id,
                 name=p.name,
+                points_per_game=p.points_per_game,
                 raw_impact=p.raw_impact,
                 impact_share=p.impact_share,
                 relative_raw_impact=p.relative_raw_impact,
