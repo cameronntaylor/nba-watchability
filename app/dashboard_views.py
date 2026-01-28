@@ -58,9 +58,9 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-matchup .teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
 .menu-matchup img {width: 28px; height: 28px;}
 .menu-matchup .name {font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
-.menu-matchup .record {font-size: 12px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
-.menu-matchup .sep {font-size: 12px; font-weight: 400; color: rgba(49,51,63,0.35); white-space: nowrap;}
-.menu-matchup .health {font-size: 12px; font-weight: 600; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-matchup .record {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-matchup .sep {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.35); white-space: nowrap;}
+.menu-matchup .health {font-size: 11px; font-weight: 600; color: rgba(49,51,63,0.65); white-space: nowrap;}
 .menu-matchup .health[data-tooltip] {cursor: pointer; text-decoration: underline dotted rgba(49,51,63,0.35); position: relative;}
 .menu-matchup .health[data-tooltip]:hover::after {
   content: attr(data-tooltip);
@@ -803,6 +803,12 @@ def _render_menu_row(r) -> str:
 def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[str]) -> None:
     sort_mode = st.segmented_control("Sort", options=["Watchability", "Tip time"], default="Watchability")
     sort_mode = sort_mode or "Watchability"
+    today_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles")).date()
+
+    def _is_today_pt_tip(x) -> bool:
+        if isinstance(x, dt.datetime):
+            return x.date() == today_pt
+        return False
 
     def _top_star_sets(day_df: pd.DataFrame) -> tuple[set[str], set[str]]:
         # Top 5 star factors across teams playing that day (inclusive of availability scaling).
@@ -838,9 +844,24 @@ def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[st
             st.markdown(f"**{py_html.escape(str(day_name))}**")
             st.divider()
             day_df = df[df["Local date"] == local_date].copy()
-            top_star_set, _ = _top_star_sets(day_df)
-            day_df["_away_top_star"] = day_df["Away team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
-            day_df["_home_top_star"] = day_df["Home team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
+            if "Tip dt (PT)" in day_df.columns:
+                day_df["_is_today_pt"] = day_df["Tip dt (PT)"].apply(_is_today_pt_tip)
+                eligible = day_df[day_df["_is_today_pt"]].copy()
+            else:
+                day_df["_is_today_pt"] = False
+                eligible = day_df.iloc[0:0].copy()
+
+            top_star_set, _ = _top_star_sets(eligible)
+            day_df["_away_top_star"] = day_df.apply(
+                lambda r: bool(r.get("_is_today_pt", False))
+                and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
+                axis=1,
+            )
+            day_df["_home_top_star"] = day_df.apply(
+                lambda r: bool(r.get("_is_today_pt", False))
+                and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
+                axis=1,
+            )
             if sort_mode == "Tip time" and "Tip dt (PT)" in day_df.columns:
                 day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
             else:
@@ -850,9 +871,22 @@ def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[st
             st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
     else:
         flat = df.copy()
-        top_star_set, _ = _top_star_sets(flat)
-        flat["_away_top_star"] = flat["Away team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
-        flat["_home_top_star"] = flat["Home team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
+        if "Tip dt (PT)" in flat.columns:
+            flat["_is_today_pt"] = flat["Tip dt (PT)"].apply(_is_today_pt_tip)
+            eligible = flat[flat["_is_today_pt"]].copy()
+        else:
+            flat["_is_today_pt"] = False
+            eligible = flat.iloc[0:0].copy()
+
+        top_star_set, _ = _top_star_sets(eligible)
+        flat["_away_top_star"] = flat.apply(
+            lambda r: bool(r.get("_is_today_pt", False)) and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
+            axis=1,
+        )
+        flat["_home_top_star"] = flat.apply(
+            lambda r: bool(r.get("_is_today_pt", False)) and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
+            axis=1,
+        )
         if sort_mode == "Tip time" and "Tip dt (PT)" in flat.columns:
             flat = flat.sort_values("Tip dt (PT)", ascending=True, na_position="last")
         else:
