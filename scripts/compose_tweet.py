@@ -11,13 +11,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core.odds_api import fetch_nba_spreads_window
-from core.schedule_espn import fetch_games_for_date
-from core.standings import _normalize_team_name, get_win_pct
-from core.standings_espn import fetch_team_standings_detail_maps
-from core.health_espn import compute_team_health
-from core.importance import compute_importance_map
 import core.watchability as watch
+from core.build_watchability_df import build_watchability_df
 
 
 def _bucket_summary() -> str | None:
@@ -29,77 +24,16 @@ def _bucket_summary() -> str | None:
     local_tz = tz.gettz("America/Los_Angeles")
     today_local = date.today()
 
-    games = fetch_nba_spreads_window(days_ahead=2)
-    winpct_map, _, detail_map = fetch_team_standings_detail_maps()
-    compute_importance_map(detail_map)  # kept for future use
-    team_names = sorted({g.home_team for g in games} | {g.away_team for g in games})
-    health_map = {}
-    for name in team_names:
-        try:
-            health, _ = compute_team_health(name)
-        except Exception:
-            health = 1.0
-        health_map[_normalize_team_name(name)] = float(health)
-
-    rows = []
-    dates = set()
-    for g in games:
-        if not g.commence_time_utc:
-            continue
-        try:
-            dt_local = dtparser.isoparse(g.commence_time_utc).astimezone(local_tz)
-        except Exception:
-            continue
-        local_date = dt_local.date()
-        dates.add(local_date)
-
-        home_key = _normalize_team_name(g.home_team)
-        away_key = _normalize_team_name(g.away_team)
-
-        w_home_raw = get_win_pct(g.home_team, winpct_map, default=0.5)
-        w_away_raw = get_win_pct(g.away_team, winpct_map, default=0.5)
-        w_home = w_home_raw * float(health_map.get(home_key, 1.0))
-        w_away = w_away_raw * float(health_map.get(away_key, 1.0))
-
-        abs_spread = None if g.home_spread is None else abs(float(g.home_spread))
-        wi = watch.compute_watchability(w_home, w_away, abs_spread).awi
-
-        rows.append(
-            {
-                "date": local_date,
-                "home": str(g.home_team).lower().strip(),
-                "away": str(g.away_team).lower().strip(),
-                "wi": float(wi),
-            }
-        )
-
-    if not rows:
+    df = build_watchability_df(days_ahead=2, tz_name="America/Los_Angeles", include_post=False)
+    if df.empty:
         return None
 
-    # Choose "today PT" if present, else earliest date we have.
-    selected_date = today_local if today_local in dates else min(dates)
-    date_iso = selected_date.isoformat()
+    dates = sorted({d for d in df["Local date"].dropna().tolist()})
+    if not dates:
+        return None
 
-    # Build ESPN status map so we can exclude post games.
-    status_map = {}
-    try:
-        for e in fetch_games_for_date(selected_date):
-            home = _normalize_team_name(str(e.get("home_team", "")))
-            away = _normalize_team_name(str(e.get("away_team", "")))
-            state = str(e.get("state", ""))
-            if home and away and state:
-                status_map[(date_iso, home, away)] = state
-    except Exception:
-        status_map = {}
-
-    wis = []
-    for r in rows:
-        if r["date"] != selected_date:
-            continue
-        state = status_map.get((date_iso, _normalize_team_name(r["home"]), _normalize_team_name(r["away"])))
-        if state == "post":
-            continue
-        wis.append(r["wi"])
+    selected_date = today_local if today_local in dates else dates[0]
+    wis = df[df["Local date"] == selected_date]["aWI"].astype(float).dropna().tolist()
 
     if not wis:
         return None

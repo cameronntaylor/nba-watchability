@@ -4,12 +4,13 @@ import datetime as dt
 import json
 from typing import Any
 
+import concurrent.futures as cf
+import os
 import pandas as pd
-import requests
 from dateutil import parser as dtparser
 from dateutil import tz
 
-from core.health_espn import compute_team_player_impacts, injury_weight
+from core.health_espn import PlayerImpact, compute_team_player_impacts, injury_weight
 from core.http_cache import get_json_cached
 from core.importance import compute_importance_detail_map
 from core.odds_api import fetch_nba_spreads_window
@@ -20,6 +21,10 @@ from core.team_meta import get_logo_url
 from core.watchability_v2_params import (
     INJURY_OVERALL_IMPORTANCE_WEIGHT,
     KEY_INJURY_IMPACT_SHARE_THRESHOLD,
+    STAR_AST_WEIGHT,
+    STAR_DENOM,
+    STAR_REB_WEIGHT,
+    STAR_WINPCT_BUMP,
 )
 
 import core.watchability as watch
@@ -113,10 +118,14 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
     """
     out: dict[str, dict[str, dict[str, str]]] = {}
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
-    for gid in game_ids:
-        gid_s = str(gid).strip()
-        if not gid_s:
-            continue
+
+    ids = [str(g).strip() for g in game_ids if str(g).strip()]
+    if not ids:
+        return out
+
+    max_workers = int(os.getenv("NBA_WATCH_SUMMARY_WORKERS", "8"))
+
+    def _fetch_one(gid_s: str) -> tuple[str, dict[str, dict[str, str]] | None]:
         try:
             resp = get_json_cached(
                 url,
@@ -128,11 +137,11 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
             )
             data = resp.data
         except Exception:
-            continue
+            return gid_s, None
 
         injuries = data.get("injuries") if isinstance(data, dict) else None
         if not isinstance(injuries, list):
-            continue
+            return gid_s, {}
 
         by_team: dict[str, dict[str, str]] = {}
         for block in injuries:
@@ -177,7 +186,17 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
                 m[athlete_id] = chosen
             by_team[team_key] = m
 
-        out[gid_s] = by_team
+        return gid_s, by_team
+
+    # Parallelize per-game summary fetches; this is the biggest cold-load hotspot.
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(_fetch_one, gid) for gid in ids]
+        for fut in cf.as_completed(futures):
+            gid_s, by_team = fut.result()
+            if by_team is None:
+                continue
+            out[gid_s] = by_team
+
     return out
 
 
@@ -198,7 +217,10 @@ def build_watchability_df(
     et_tz = tz.gettz("America/New_York")
 
     team_names = sorted({g.home_team for g in games} | {g.away_team for g in games})
-    team_impacts = { _normalize_team_name(n): compute_team_player_impacts(n) for n in team_names }
+    # Compute player impact shares lazily only for teams that have injuries in a specific matchup.
+    # This is a major performance win vs. computing for every team on every refresh.
+    team_name_by_key = { _normalize_team_name(n): n for n in team_names }
+    team_impacts: dict[str, list[PlayerImpact]] = {}
 
     rows: list[dict[str, Any]] = []
     for g in games:
@@ -341,35 +363,131 @@ def build_watchability_df(
     game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
     injury_reports = _load_espn_game_injury_report_map(game_ids) if game_ids else {}
 
-    def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str]:
+    teams_with_injuries: set[str] = set()
+    for _, by_team in injury_reports.items():
+        for team_key, inj in (by_team or {}).items():
+            if isinstance(inj, dict) and inj:
+                teams_with_injuries.add(str(team_key))
+
+    # Star/top-scorer map needed for all teams; compute impacts once per team (cached per-athlete stats).
+    # Keep this parallelized and rely on the disk HTTP cache to make warm loads fast.
+    star_workers = int(os.getenv("NBA_WATCH_STAR_WORKERS", "8"))
+    # team_key -> (athlete_id, name, star_raw, star_sum)
+    top_scorer: dict[str, tuple[str, str, float, float]] = {}
+
+    def _fetch_team(team_key: str, team_name: str) -> tuple[str, list[PlayerImpact]]:
+        try:
+            return team_key, compute_team_player_impacts(team_name)
+        except Exception:
+            return team_key, []
+
+    with cf.ThreadPoolExecutor(max_workers=star_workers) as ex:
+        futures = [
+            ex.submit(_fetch_team, team_key, team_name_by_key.get(team_key, team_key))
+            for team_key in sorted(team_name_by_key.keys())
+        ]
+        for fut in cf.as_completed(futures):
+            k, players = fut.result()
+            # Keep the full list only if we might need it for injury penalty breakdown.
+            if k in teams_with_injuries:
+                team_impacts[k] = players
+            if players:
+                def _star_sum(pl: PlayerImpact) -> float:
+                    return (
+                        float(pl.points_per_game)
+                        + float(STAR_REB_WEIGHT) * float(pl.rebounds_per_game)
+                        + float(STAR_AST_WEIGHT) * float(pl.assists_per_game)
+                        + float(pl.steals_per_game)
+                        + float(pl.blocks_per_game)
+                    )
+
+                best = max(players, key=_star_sum)
+                ssum = _star_sum(best)
+                denom = float(STAR_DENOM) if float(STAR_DENOM) else 1.0
+                sraw = float(ssum) / denom
+                sraw = sraw * sraw * sraw
+                top_scorer[k] = (best.athlete_id, best.name, sraw, ssum)
+
+    def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str, str]:
         players = team_impacts.get(team_key, []) or []
         by_team = injury_reports.get(str(game_id or ""), {}).get(team_key, {})
 
+        if not by_team:
+            return 1.0, "", "[]"
+
+        impact_by_id: dict[str, PlayerImpact] = {str(p.athlete_id): p for p in players}
+
         penalty = 0.0
         injured_players: list[tuple[float, float, str]] = []
-        for p in players:
-            pid = str(p.athlete_id)
+        detail: list[dict[str, Any]] = []
+
+        for pid, st in (by_team or {}).items():
+            pid_str = str(pid)
+            st_norm = _normalize_status_for_display(str(st) if st is not None else None)
+            w = float(injury_weight(st_norm))
+
+            p = impact_by_id.get(pid_str)
+            if p is None:
+                detail.append(
+                    {
+                        "player": "",
+                        "player_id": pid_str,
+                        "status": st_norm,
+                        "injury_weight": w,
+                        "impact_share": None,
+                        "raw_impact": None,
+                        "health_delta": None,
+                        "health_delta_share": None,
+                    }
+                )
+                continue
+
             name = str(p.name)
             share = float(p.impact_share)
             raw = float(p.raw_impact)
-            st = by_team.get(pid)
-            if not st:
-                continue
-            st_norm = _normalize_status_for_display(st)
-            penalty += float(injury_weight(st_norm)) * float(share)
+            penalty += w * share
+
+            health_delta = float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * w * share
             injured_players.append((raw, share, f"{name}: {st_norm}"))
+            detail.append(
+                {
+                    "player": name,
+                    "player_id": pid_str,
+                    "status": st_norm,
+                    "injury_weight": w,
+                    "impact_share": share,
+                    "raw_impact": raw,
+                    "health_delta": health_delta,
+                    "health_delta_share": None,
+                }
+            )
 
         health = 1.0 - float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * penalty
         health = max(0.0, min(1.0, float(health)))
+
         injured_players.sort(key=lambda x: x[0], reverse=True)
-        key_injuries = [
-            s for _, share, s in injured_players if float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD
-        ]
-        return health, ", ".join(key_injuries)
+        key_injuries = [s for _, share, s in injured_players if float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD]
 
-    injury_info_cache: dict[tuple[str, str], tuple[float, str]] = {}
+        total_delta = sum(float(d["health_delta"]) for d in detail if d.get("health_delta") is not None)
+        if total_delta > 0:
+            for d in detail:
+                if d.get("health_delta") is None:
+                    continue
+                d["health_delta_share"] = float(d["health_delta"]) / float(total_delta)
 
-    def _memo_team_injury_info(team_key: str, game_id: str | None) -> tuple[float, str]:
+        detail.sort(
+            key=lambda d: (
+                d.get("health_delta") is None,
+                -float(d.get("health_delta") or 0.0),
+                str(d.get("player") or ""),
+            )
+        )
+        detail_json = json.dumps(detail, ensure_ascii=False)
+        return health, ", ".join(key_injuries), detail_json
+
+    injury_info_cache: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+    def _memo_team_injury_info(team_key: str, game_id: str | None) -> tuple[float, str, str]:
         k = (team_key, str(game_id or ""))
         if k in injury_info_cache:
             return injury_info_cache[k]
@@ -393,9 +511,109 @@ def build_watchability_df(
         lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[1] or "",
         axis=1,
     )
+    df["Away injuries detail JSON"] = df.apply(
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[2] or "[]",
+        axis=1,
+    )
+    df["Home injuries detail JSON"] = df.apply(
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[2] or "[]",
+        axis=1,
+    )
 
+    # Baseline adjusted win% prior to star bump (health-adjusted only).
     df["Adj win% (away)"] = df["Win% (away raw)"].astype(float) * df["Health (away)"].astype(float)
     df["Adj win% (home)"] = df["Win% (home raw)"].astype(float) * df["Health (home)"].astype(float)
+    df["Adj win% (away) pre-star"] = df["Adj win% (away)"].astype(float)
+    df["Adj win% (home) pre-star"] = df["Adj win% (home)"].astype(float)
+    df["Avg adj win% pre-star"] = 0.5 * (df["Adj win% (away) pre-star"] + df["Adj win% (home) pre-star"])
+
+    def _star_factor(team_key: str, game_id: str | None) -> float:
+        top = top_scorer.get(team_key)
+        if not top:
+            return 0.0
+        athlete_id, _, star_raw, _ = top
+        # If the top scorer appears in the injury report, apply availability scaling.
+        status = injury_reports.get(str(game_id or ""), {}).get(team_key, {}).get(str(athlete_id))
+        status_norm = _normalize_status_for_display(status) if status else "Available"
+        availability = max(0.0, 1.0 - float(injury_weight(status_norm)))
+        return float(STAR_WINPCT_BUMP) * float(star_raw) * availability
+
+    def _star_player_name(team_key: str) -> str:
+        top = top_scorer.get(team_key)
+        if not top:
+            return ""
+        _, name, _, _ = top
+        return str(name)
+
+    def _star_player_raw(team_key: str) -> float:
+        top = top_scorer.get(team_key)
+        if not top:
+            return 0.0
+        _, _, star_raw, _ = top
+        return float(star_raw)
+
+    df["Star factor (away)"] = df.apply(
+        lambda r: _star_factor(_normalize_team_name(r["Away team"]), r.get("ESPN game id")),
+        axis=1,
+    )
+    df["Star factor (home)"] = df.apply(
+        lambda r: _star_factor(_normalize_team_name(r["Home team"]), r.get("ESPN game id")),
+        axis=1,
+    )
+    df["Away Star Player"] = df.apply(lambda r: _star_player_name(_normalize_team_name(r["Away team"])), axis=1)
+    df["Home Star Player"] = df.apply(lambda r: _star_player_name(_normalize_team_name(r["Home team"])), axis=1)
+    df["Away Star Raw"] = df.apply(lambda r: _star_player_raw(_normalize_team_name(r["Away team"])), axis=1)
+    df["Home Star Raw"] = df.apply(lambda r: _star_player_raw(_normalize_team_name(r["Home team"])), axis=1)
+
+    # Add star factor as a small additive bump to win% (then clip to [0,1]).
+    df["Adj win% (away)"] = (df["Adj win% (away)"].astype(float) + df["Star factor (away)"].astype(float)).clip(0.0, 1.0)
+    df["Adj win% (home)"] = (df["Adj win% (home)"].astype(float) + df["Star factor (home)"].astype(float)).clip(0.0, 1.0)
+    df["Avg adj win% post-star"] = 0.5 * (df["Adj win% (away)"] + df["Adj win% (home)"])
+
+    # Convert star bumps into the same units as the displayed "Team Quality" component (0..1 then scaled to 0..100).
+    def _quality_bumps_row(r) -> pd.Series:
+        away_pre = float(r.get("Adj win% (away) pre-star") or 0.0)
+        home_pre = float(r.get("Adj win% (home) pre-star") or 0.0)
+        away_sf = float(r.get("Star factor (away)") or 0.0)
+        home_sf = float(r.get("Star factor (home)") or 0.0)
+
+        q_pre = float(watch.team_quality(home_pre, away_pre))
+
+        away_only = min(1.0, away_pre + away_sf)
+        home_only = min(1.0, home_pre + home_sf)
+        dq_away = float(watch.team_quality(home_pre, away_only)) - q_pre
+        dq_home = float(watch.team_quality(home_only, away_pre)) - q_pre
+        return pd.Series(
+            {
+                "Team quality pre-star": q_pre,
+                "Team Quality bump (away)": 100.0 * dq_away,
+                "Team Quality bump (home)": 100.0 * dq_home,
+            }
+        )
+
+    df[["Team quality pre-star", "Team Quality bump (away)", "Team Quality bump (home)"]] = df.apply(
+        _quality_bumps_row, axis=1
+    )
+
+    def _star_factor_display(name: str, bump_points: float) -> str:
+        if not name:
+            return ""
+        try:
+            b = float(bump_points)
+        except Exception:
+            b = 0.0
+        if b <= 0:
+            return ""
+        return f"{name} +{int(round(b))} TQ"
+
+    df["Away Star Factor"] = df.apply(
+        lambda r: _star_factor_display(str(r.get("Away Star Player") or ""), float(r.get("Team Quality bump (away)") or 0.0)),
+        axis=1,
+    )
+    df["Home Star Factor"] = df.apply(
+        lambda r: _star_factor_display(str(r.get("Home Star Player") or ""), float(r.get("Team Quality bump (home)") or 0.0)),
+        axis=1,
+    )
 
     def _compute_watchability_row(r) -> pd.Series:
         w = watch.compute_watchability(
@@ -429,4 +647,3 @@ def build_watchability_sources_summary(df: pd.DataFrame) -> str:
         "generated_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     return json.dumps(payload, sort_keys=True)
-

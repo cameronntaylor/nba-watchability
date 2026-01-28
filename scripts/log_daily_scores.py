@@ -55,6 +55,13 @@ def main() -> int:
             "home_spread": df["Home spread"],
             "health_score_away": df["Health (away)"].astype(float),
             "health_score_home": df["Health (home)"].astype(float),
+            "away_star_player": df.get("Away Star Player", pd.Series(dtype=str)).fillna("").astype(str),
+            "home_star_player": df.get("Home Star Player", pd.Series(dtype=str)).fillna("").astype(str),
+            # Team Quality equivalent points (0..100) attributable to star bump for each team.
+            "away_star_tq_bump": df.get("Team Quality bump (away)", pd.Series(dtype=float)).fillna(0.0).astype(float),
+            "home_star_tq_bump": df.get("Team Quality bump (home)", pd.Series(dtype=float)).fillna(0.0).astype(float),
+            "away_injuries_detail_json": df.get("Away injuries detail JSON", pd.Series(dtype=str)).fillna("[]").astype(str),
+            "home_injuries_detail_json": df.get("Home injuries detail JSON", pd.Series(dtype=str)).fillna("[]").astype(str),
             "team_quality_score": df["Team quality"].astype(float),
             "competitiveness_score": df["Closeness"].astype(float),
             "watchability_score": df["aWI"].astype(float),
@@ -89,4 +96,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

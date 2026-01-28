@@ -26,7 +26,7 @@ from core.build_watchability_df import build_watchability_df
 import core.watchability as watch
 
 
-@st.cache_data(ttl=60 * 10)  # 10 min (odds + injuries)
+@st.cache_data(ttl=60 * 5)  # 5 min (odds + injuries)
 def load_watchability_df(days_ahead: int = 2) -> pd.DataFrame:
     return build_watchability_df(days_ahead=days_ahead)
 
@@ -397,6 +397,10 @@ def render_chart(
         df_plot["Away Key Injuries"] = df_plot["Away Key Injuries"].fillna("")
     if "Home Key Injuries" in df_plot.columns:
         df_plot["Home Key Injuries"] = df_plot["Home Key Injuries"].fillna("")
+    if "Away Star Factor" in df_plot.columns:
+        df_plot["Away Star Factor"] = df_plot["Away Star Factor"].fillna("")
+    if "Home Star Factor" in df_plot.columns:
+        df_plot["Home Star Factor"] = df_plot["Home Star Factor"].fillna("")
     if date_options:
         if show_day_selector:
             selected = st.segmented_control(
@@ -566,6 +570,8 @@ def render_chart(
         alt.Tooltip("Home spread:Q"),
         alt.Tooltip("Health (away):Q", title="Away health", format=".2f"),
         alt.Tooltip("Health (home):Q", title="Home health", format=".2f"),
+        alt.Tooltip("Away Star Factor:N"),
+        alt.Tooltip("Home Star Factor:N"),
         alt.Tooltip("Away Key Injuries:N"),
         alt.Tooltip("Home Key Injuries:N"),
         alt.Tooltip("Record (away):N"),
@@ -607,6 +613,8 @@ def render_chart(
         "Importance",
         "Health (away)",
         "Health (home)",
+        "Away Star Factor",
+        "Home Star Factor",
         "Away Key Injuries",
         "Home Key Injuries",
         "Importance (away)",
@@ -734,6 +742,15 @@ def _render_menu_row(r) -> str:
     away_tip = py_html.escape(away_inj) if away_inj else ""
     home_tip = py_html.escape(home_inj) if home_inj else ""
 
+    away_star_html = ""
+    home_star_html = ""
+    if bool(r.get("_away_top_star", False)):
+        tip = py_html.escape(str(r.get("Away Star Player") or ""))
+        away_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+    if bool(r.get("_home_top_star", False)):
+        tip = py_html.escape(str(r.get("Home Star Player") or ""))
+        home_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+
     away_key_html = (
         f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">❗ Key Injuries</div>"
         if away_inj
@@ -765,12 +782,14 @@ def _render_menu_row(r) -> str:
 {away_img}
 <div class="name">{away}</div>
 <div class="record">{record_away}</div>
+{away_star_html}
 {away_key_html}
 </div>
 <div class="teamline">
 {home_img}
 <div class="name">{home}</div>
 <div class="record">{record_home}</div>
+{home_star_html}
 {home_key_html}
 </div>
 </div>
@@ -785,11 +804,43 @@ def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[st
     sort_mode = st.segmented_control("Sort", options=["Watchability", "Tip time"], default="Watchability")
     sort_mode = sort_mode or "Watchability"
 
+    def _top_star_sets(day_df: pd.DataFrame) -> tuple[set[str], set[str]]:
+        # Top 5 star factors across teams playing that day (inclusive of availability scaling).
+        entries: list[tuple[float, str, str]] = []
+        for _, r in day_df.iterrows():
+            away_key = _normalize_team_name(str(r.get("Away team", "")))
+            home_key = _normalize_team_name(str(r.get("Home team", "")))
+            try:
+                af = float(r.get("Star factor (away)") or 0.0)
+            except Exception:
+                af = 0.0
+            try:
+                hf = float(r.get("Star factor (home)") or 0.0)
+            except Exception:
+                hf = 0.0
+            if af > 0:
+                entries.append((af, away_key, "away"))
+            if hf > 0:
+                entries.append((hf, home_key, "home"))
+
+        entries.sort(key=lambda x: x[0], reverse=True)
+        top_keys: list[str] = []
+        for _, k, _side in entries:
+            if k and k not in top_keys:
+                top_keys.append(k)
+            if len(top_keys) >= 5:
+                break
+        top_set = set(top_keys)
+        return top_set, top_set
+
     if date_options:
         for local_date, day_name in df_dates.itertuples(index=False, name=None):
             st.markdown(f"**{py_html.escape(str(day_name))}**")
             st.divider()
             day_df = df[df["Local date"] == local_date].copy()
+            top_star_set, _ = _top_star_sets(day_df)
+            day_df["_away_top_star"] = day_df["Away team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
+            day_df["_home_top_star"] = day_df["Home team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
             if sort_mode == "Tip time" and "Tip dt (PT)" in day_df.columns:
                 day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
             else:
@@ -799,6 +850,9 @@ def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[st
             st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
     else:
         flat = df.copy()
+        top_star_set, _ = _top_star_sets(flat)
+        flat["_away_top_star"] = flat["Away team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
+        flat["_home_top_star"] = flat["Home team"].apply(lambda t: _normalize_team_name(str(t)) in top_star_set)
         if sort_mode == "Tip time" and "Tip dt (PT)" in flat.columns:
             flat = flat.sort_values("Tip dt (PT)", ascending=True, na_position="last")
         else:
