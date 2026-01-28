@@ -568,9 +568,6 @@ def render_chart(
         alt.Tooltip("Region:N"),
         alt.Tooltip("Tip (PT):N"),
         alt.Tooltip("Home spread:Q"),
-        alt.Tooltip("Avg adj win% pre-star:Q", format=".3f"),
-        alt.Tooltip("Star factor (away):Q", title="Away star bump", format=".3f"),
-        alt.Tooltip("Star factor (home):Q", title="Home star bump", format=".3f"),
         alt.Tooltip("Health (away):Q", title="Away health", format=".2f"),
         alt.Tooltip("Health (home):Q", title="Home health", format=".2f"),
         alt.Tooltip("Away Star Factor:N"),
@@ -748,25 +745,11 @@ def _render_menu_row(r) -> str:
     away_star_html = ""
     home_star_html = ""
     if bool(r.get("_away_top_star", False)):
-        extra = ""
-        try:
-            pre = float(r.get("Adj win% (away) pre-star"))
-            bump = float(r.get("Star factor (away)"))
-            extra = f"&#10;pre-star win%: {pre:.3f}&#10;star bump: +{bump:.3f}"
-        except Exception:
-            extra = ""
-        tip = py_html.escape(str(r.get("Away Star Player") or "")) + extra
-        away_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top star</div>"
+        tip = py_html.escape(str(r.get("Away Star Player") or ""))
+        away_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
     if bool(r.get("_home_top_star", False)):
-        extra = ""
-        try:
-            pre = float(r.get("Adj win% (home) pre-star"))
-            bump = float(r.get("Star factor (home)"))
-            extra = f"&#10;pre-star win%: {pre:.3f}&#10;star bump: +{bump:.3f}"
-        except Exception:
-            extra = ""
-        tip = py_html.escape(str(r.get("Home Star Player") or "")) + extra
-        home_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top star</div>"
+        tip = py_html.escape(str(r.get("Home Star Player") or ""))
+        home_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
 
     away_key_html = (
         f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">❗ Key Injuries</div>"

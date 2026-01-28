@@ -408,38 +408,86 @@ def build_watchability_df(
                 sraw = sraw * sraw * sraw
                 top_scorer[k] = (best.athlete_id, best.name, sraw, ssum)
 
-    def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str]:
+    def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str, str]:
         players = team_impacts.get(team_key, []) or []
         by_team = injury_reports.get(str(game_id or ""), {}).get(team_key, {})
 
         if not by_team:
-            return 1.0, ""
+            return 1.0, "", "[]"
+
+        impact_by_id: dict[str, PlayerImpact] = {str(p.athlete_id): p for p in players}
 
         penalty = 0.0
         injured_players: list[tuple[float, float, str]] = []
-        for p in players:
-            pid = str(p.athlete_id)
+        detail: list[dict[str, Any]] = []
+
+        for pid, st in (by_team or {}).items():
+            pid_str = str(pid)
+            st_norm = _normalize_status_for_display(str(st) if st is not None else None)
+            w = float(injury_weight(st_norm))
+
+            p = impact_by_id.get(pid_str)
+            if p is None:
+                detail.append(
+                    {
+                        "player": "",
+                        "player_id": pid_str,
+                        "status": st_norm,
+                        "injury_weight": w,
+                        "impact_share": None,
+                        "raw_impact": None,
+                        "health_delta": None,
+                        "health_delta_share": None,
+                    }
+                )
+                continue
+
             name = str(p.name)
             share = float(p.impact_share)
             raw = float(p.raw_impact)
-            st = by_team.get(pid)
-            if not st:
-                continue
-            st_norm = _normalize_status_for_display(st)
-            penalty += float(injury_weight(st_norm)) * float(share)
+            penalty += w * share
+
+            health_delta = float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * w * share
             injured_players.append((raw, share, f"{name}: {st_norm}"))
+            detail.append(
+                {
+                    "player": name,
+                    "player_id": pid_str,
+                    "status": st_norm,
+                    "injury_weight": w,
+                    "impact_share": share,
+                    "raw_impact": raw,
+                    "health_delta": health_delta,
+                    "health_delta_share": None,
+                }
+            )
 
         health = 1.0 - float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * penalty
         health = max(0.0, min(1.0, float(health)))
+
         injured_players.sort(key=lambda x: x[0], reverse=True)
-        key_injuries = [
-            s for _, share, s in injured_players if float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD
-        ]
-        return health, ", ".join(key_injuries)
+        key_injuries = [s for _, share, s in injured_players if float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD]
 
-    injury_info_cache: dict[tuple[str, str], tuple[float, str]] = {}
+        total_delta = sum(float(d["health_delta"]) for d in detail if d.get("health_delta") is not None)
+        if total_delta > 0:
+            for d in detail:
+                if d.get("health_delta") is None:
+                    continue
+                d["health_delta_share"] = float(d["health_delta"]) / float(total_delta)
 
-    def _memo_team_injury_info(team_key: str, game_id: str | None) -> tuple[float, str]:
+        detail.sort(
+            key=lambda d: (
+                d.get("health_delta") is None,
+                -float(d.get("health_delta") or 0.0),
+                str(d.get("player") or ""),
+            )
+        )
+        detail_json = json.dumps(detail, ensure_ascii=False)
+        return health, ", ".join(key_injuries), detail_json
+
+    injury_info_cache: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+    def _memo_team_injury_info(team_key: str, game_id: str | None) -> tuple[float, str, str]:
         k = (team_key, str(game_id or ""))
         if k in injury_info_cache:
             return injury_info_cache[k]
@@ -461,6 +509,14 @@ def build_watchability_df(
     )
     df["Home Key Injuries"] = df.apply(
         lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[1] or "",
+        axis=1,
+    )
+    df["Away injuries detail JSON"] = df.apply(
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[2] or "[]",
+        axis=1,
+    )
+    df["Home injuries detail JSON"] = df.apply(
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[2] or "[]",
         axis=1,
     )
 
@@ -496,14 +552,6 @@ def build_watchability_df(
         _, _, star_raw, _ = top
         return float(star_raw)
 
-    def _star_display(team_key: str, game_id: str | None) -> str:
-        name = _star_player_name(team_key)
-        if not name:
-            return ""
-        f = _star_factor(team_key, game_id)
-        # Show as percentage points added to win% for readability.
-        return f"{name} +{(100.0 * float(f)):.1f}%"
-
     df["Star factor (away)"] = df.apply(
         lambda r: _star_factor(_normalize_team_name(r["Away team"]), r.get("ESPN game id")),
         axis=1,
@@ -516,19 +564,56 @@ def build_watchability_df(
     df["Home Star Player"] = df.apply(lambda r: _star_player_name(_normalize_team_name(r["Home team"])), axis=1)
     df["Away Star Raw"] = df.apply(lambda r: _star_player_raw(_normalize_team_name(r["Away team"])), axis=1)
     df["Home Star Raw"] = df.apply(lambda r: _star_player_raw(_normalize_team_name(r["Home team"])), axis=1)
-    df["Away Star Factor"] = df.apply(
-        lambda r: _star_display(_normalize_team_name(r["Away team"]), r.get("ESPN game id")),
-        axis=1,
-    )
-    df["Home Star Factor"] = df.apply(
-        lambda r: _star_display(_normalize_team_name(r["Home team"]), r.get("ESPN game id")),
-        axis=1,
-    )
 
     # Add star factor as a small additive bump to win% (then clip to [0,1]).
     df["Adj win% (away)"] = (df["Adj win% (away)"].astype(float) + df["Star factor (away)"].astype(float)).clip(0.0, 1.0)
     df["Adj win% (home)"] = (df["Adj win% (home)"].astype(float) + df["Star factor (home)"].astype(float)).clip(0.0, 1.0)
     df["Avg adj win% post-star"] = 0.5 * (df["Adj win% (away)"] + df["Adj win% (home)"])
+
+    # Convert star bumps into the same units as the displayed "Team Quality" component (0..1 then scaled to 0..100).
+    def _quality_bumps_row(r) -> pd.Series:
+        away_pre = float(r.get("Adj win% (away) pre-star") or 0.0)
+        home_pre = float(r.get("Adj win% (home) pre-star") or 0.0)
+        away_sf = float(r.get("Star factor (away)") or 0.0)
+        home_sf = float(r.get("Star factor (home)") or 0.0)
+
+        q_pre = float(watch.team_quality(home_pre, away_pre))
+
+        away_only = min(1.0, away_pre + away_sf)
+        home_only = min(1.0, home_pre + home_sf)
+        dq_away = float(watch.team_quality(home_pre, away_only)) - q_pre
+        dq_home = float(watch.team_quality(home_only, away_pre)) - q_pre
+        return pd.Series(
+            {
+                "Team quality pre-star": q_pre,
+                "Team Quality bump (away)": 100.0 * dq_away,
+                "Team Quality bump (home)": 100.0 * dq_home,
+            }
+        )
+
+    df[["Team quality pre-star", "Team Quality bump (away)", "Team Quality bump (home)"]] = df.apply(
+        _quality_bumps_row, axis=1
+    )
+
+    def _star_factor_display(name: str, bump_points: float) -> str:
+        if not name:
+            return ""
+        try:
+            b = float(bump_points)
+        except Exception:
+            b = 0.0
+        if b <= 0:
+            return ""
+        return f"{name} +{int(round(b))} TQ"
+
+    df["Away Star Factor"] = df.apply(
+        lambda r: _star_factor_display(str(r.get("Away Star Player") or ""), float(r.get("Team Quality bump (away)") or 0.0)),
+        axis=1,
+    )
+    df["Home Star Factor"] = df.apply(
+        lambda r: _star_factor_display(str(r.get("Home Star Player") or ""), float(r.get("Team Quality bump (home)") or 0.0)),
+        axis=1,
+    )
 
     def _compute_watchability_row(r) -> pd.Series:
         w = watch.compute_watchability(
