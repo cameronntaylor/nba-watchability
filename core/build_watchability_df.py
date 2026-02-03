@@ -18,6 +18,7 @@ from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps
 from core.team_meta import get_logo_url
+from core.team_meta import get_team_abbr
 from core.watchability_v2_params import (
     INJURY_OVERALL_IMPORTANCE_WEIGHT,
     KEY_INJURY_IMPACT_SHARE_THRESHOLD,
@@ -200,6 +201,78 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
     return out
 
 
+def _load_nba_schedule_game_id_map_by_pt_date(
+    pt_dates_iso: set[str],
+    *,
+    pt_tz_name: str = "America/Los_Angeles",
+) -> dict[tuple[str, str, str], str]:
+    """
+    Map (pt_date_iso, home_tricode_lower, away_tricode_lower) -> nba_game_id.
+
+    Uses nba.com schedule JSON (public) which includes gameIds for the full season:
+    https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json
+    """
+    out: dict[tuple[str, str, str], str] = {}
+    if not pt_dates_iso:
+        return out
+
+    pt_tz = tz.gettz(pt_tz_name)
+
+    url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
+    try:
+        resp = get_json_cached(
+            url,
+            namespace="nba",
+            cache_key="nba_scheduleLeagueV2",
+            ttl_seconds=24 * 60 * 60,
+            timeout_seconds=15,
+        )
+        data = resp.data
+    except Exception:
+        return out
+
+    game_dates = None
+    if isinstance(data, dict):
+        league = data.get("leagueSchedule")
+        if isinstance(league, dict):
+            game_dates = league.get("gameDates")
+    if not isinstance(game_dates, list):
+        return out
+
+    for gd in game_dates:
+        if not isinstance(gd, dict):
+            continue
+        games = gd.get("games")
+        if not isinstance(games, list):
+            continue
+        for g in games:
+            if not isinstance(g, dict):
+                continue
+            gid = str(g.get("gameId") or "").strip()
+            start_utc_raw = str(g.get("gameDateTimeUTC") or "").strip()
+            if not (gid and start_utc_raw):
+                continue
+            try:
+                t_utc = dtparser.isoparse(start_utc_raw)
+                t_utc = t_utc.astimezone(dt.timezone.utc) if t_utc.tzinfo else t_utc.replace(tzinfo=dt.timezone.utc)
+            except Exception:
+                continue
+            t_pt = t_utc.astimezone(pt_tz) if pt_tz else t_utc
+            pt_date_iso = t_pt.date().isoformat()
+            if pt_date_iso not in pt_dates_iso:
+                continue
+
+            home = g.get("homeTeam") if isinstance(g.get("homeTeam"), dict) else {}
+            away = g.get("awayTeam") if isinstance(g.get("awayTeam"), dict) else {}
+            home_abbr = str(home.get("teamTricode") or "").strip().lower()
+            away_abbr = str(away.get("teamTricode") or "").strip().lower()
+            if not (home_abbr and away_abbr):
+                continue
+            out[(pt_date_iso, home_abbr, away_abbr)] = gid
+
+    return out
+
+
 def build_watchability_df(
     *,
     days_ahead: int = 2,
@@ -249,6 +322,7 @@ def build_watchability_df(
         dt_et = None
         if g.commence_time_utc:
             dt_utc = dtparser.isoparse(g.commence_time_utc)
+            dt_utc = dt_utc.astimezone(dt.timezone.utc) if dt_utc.tzinfo else dt_utc.replace(tzinfo=dt.timezone.utc)
             dt_local = dt_utc.astimezone(local_tz) if local_tz else dt_utc
             dt_et = dt_utc.astimezone(et_tz) if et_tz else None
             local_date = dt_local.date()
@@ -271,6 +345,7 @@ def build_watchability_df(
                 "Tip short": tip_short,
                 "Tip dt (PT)": dt_local,
                 "Tip dt (ET)": dt_et,
+                "Tip dt (UTC)": dt_utc,
                 "Local date": local_date,
                 "Day": day_name,
                 "Matchup": f"{g.away_team} @ {g.home_team}",
@@ -362,6 +437,39 @@ def build_watchability_df(
 
     game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
     injury_reports = _load_espn_game_injury_report_map(game_ids) if game_ids else {}
+
+    # NBA.com game URLs (match by PT date + teams; teams play at most once per date).
+    pt_dates_iso = {
+        str(d) for d in df.get("Local date", pd.Series(dtype=object)).dropna().tolist() if str(d).strip()
+    }
+    nba_game_id_map = _load_nba_schedule_game_id_map_by_pt_date(pt_dates_iso, pt_tz_name=tz_name)
+
+    def _nba_tricode(team_name: str) -> str:
+        abbr = (get_team_abbr(team_name) or "").upper()
+        if abbr == "NO":
+            return "NOP"
+        if abbr == "UTAH":
+            return "UTA"
+        return abbr
+
+    def _nba_game_url_row(r) -> str:
+        pt_date = r.get("Local date")
+        if pt_date is None:
+            return ""
+        pt_date_iso = str(pt_date)
+
+        home_abbr = _nba_tricode(str(r.get("Home team", ""))).lower()
+        away_abbr = _nba_tricode(str(r.get("Away team", ""))).lower()
+        if not (home_abbr and away_abbr):
+            return ""
+
+        gid = nba_game_id_map.get((pt_date_iso, home_abbr, away_abbr))
+        if not gid:
+            return ""
+        # nba.com uses format: https://www.nba.com/game/bos-vs-dal-0022500721
+        return f"https://www.nba.com/game/{away_abbr}-vs-{home_abbr}-{gid}"
+
+    df["Where to watch URL"] = df.apply(_nba_game_url_row, axis=1)
 
     teams_with_injuries: set[str] = set()
     for _, by_team in injury_reports.items():
@@ -519,6 +627,7 @@ def build_watchability_df(
         lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[2] or "[]",
         axis=1,
     )
+
 
     # Baseline adjusted win% prior to star bump (health-adjusted only).
     df["Adj win% (away)"] = df["Win% (away raw)"].astype(float) * df["Health (away)"].astype(float)

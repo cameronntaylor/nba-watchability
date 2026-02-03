@@ -90,7 +90,6 @@ div[data-testid="collapsedControl"] {display: none;}
 }
 .menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
-
 /* Small "info" hover icon next to the dashboard caption. */
 .info-icon {display:inline-flex; align-items:center; justify-content:center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid rgba(49,51,63,0.25); color: rgba(49,51,63,0.8); font-size: 13px; font-weight: 700;}
 .info-icon[data-tooltip] {cursor: pointer; position: relative;}
@@ -726,6 +725,12 @@ def _render_menu_row(r) -> str:
         tip_et = str(r.get("Tip (ET)", "Unknown"))
         tip_line = f"Tip {tip_pt} PT / {tip_et} ET"
     tip_line = py_html.escape(tip_line)
+    where_url = str(r.get("Where to watch URL", "") or "").strip()
+    where_html = ""
+    if where_url:
+        where_html = (
+            f"<div><a href='{py_html.escape(where_url)}' target='_blank' rel='noopener noreferrer'>Where to watch</a></div>"
+        )
     spread = r["Home spread"]
     home_abbr = get_team_abbr(str(r.get("Home team", ""))) or str(r.get("Home team", ""))[:3].upper()
     spread_str = "?" if spread is None else f"{home_abbr} {float(spread):+g}"
@@ -796,6 +801,7 @@ def _render_menu_row(r) -> str:
 <div class="menu-meta">
 <div>{tip_line}</div>
 <div>Spread: {spread_str}</div>
+{where_html}
 </div>
 </div>"""
 
