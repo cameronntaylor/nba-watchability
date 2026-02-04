@@ -46,6 +46,8 @@ def _normalize_status_for_display(status: str | None) -> str:
         return "Available"
     if s.upper() == "GTD":
         return "GTD"
+    if s.lower() in {"day-to-day", "day to day", "daytoday", "dtd"}:
+        return "GTD"
     return s
 
 
@@ -110,6 +112,117 @@ def _load_espn_game_map(local_dates_iso: list[str]) -> dict[tuple[str, str, str]
                     "away_score": away_score,
                     "time_remaining": time_remaining,
                 }
+    return out
+
+
+def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[str, dict[str, dict[str, str]]]:
+    """
+    Returns:
+      team_key -> {"by_id": {athlete_id: status}, "by_name": {normalized_name: status}}
+
+    Uses ESPN's league injuries endpoint (more comprehensive than per-game summary injuries list):
+      https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries
+    """
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+    try:
+        resp = get_json_cached(
+            url,
+            namespace="espn",
+            cache_key="league_injuries",
+            ttl_seconds=ttl_seconds,
+            timeout_seconds=30,
+        )
+        data = resp.data
+    except Exception:
+        return {}
+
+    blocks = data.get("injuries") if isinstance(data, dict) else None
+    if not isinstance(blocks, list):
+        return {}
+
+    def _athlete_id_from_links(athlete: dict[str, Any]) -> str | None:
+        links = athlete.get("links")
+        if not isinstance(links, list):
+            return None
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            href = str(link.get("href") or "")
+            # Example: https://www.espn.com/nba/player/_/id/3102531/kristaps-porzingis
+            m = None
+            if "/id/" in href:
+                import re
+                m = re.search(r"/id/(\\d+)", href)
+            if m:
+                return str(m.group(1))
+        return None
+
+    def _parse_status(inj: dict[str, Any]) -> str:
+        # Prefer raw status (often 'Out' / 'Day-To-Day'), but fall back to details.type/shortComment parsing.
+        status = inj.get("status")
+        if isinstance(status, str) and status.strip():
+            return _normalize_status_for_display(status)
+
+        details = inj.get("details")
+        if isinstance(details, dict):
+            fantasy = details.get("fantasyStatus")
+            if isinstance(fantasy, dict):
+                dd = fantasy.get("displayDescription") or fantasy.get("description") or fantasy.get("abbreviation")
+                if isinstance(dd, str) and dd.strip():
+                    return _normalize_status_for_display(dd.strip())
+            t = details.get("type")
+            if isinstance(t, str) and t.strip():
+                return _normalize_status_for_display(t.strip())
+
+        for k in ("shortComment", "longComment"):
+            txt = str(inj.get(k) or "").lower()
+            if "probable" in txt:
+                return "Probable"
+            if "doubtful" in txt:
+                return "Doubtful"
+            if "questionable" in txt or "game-time decision" in txt or "game time decision" in txt:
+                return "Questionable"
+            if "day-to-day" in txt or "day to day" in txt:
+                return "GTD"
+            if "out" in txt:
+                return "Out"
+
+        t = inj.get("type")
+        if isinstance(t, dict):
+            desc = t.get("description") or t.get("name") or t.get("abbreviation")
+            if isinstance(desc, str) and desc.strip():
+                return _normalize_status_for_display(desc.strip())
+
+        return "GTD"
+
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        team_name = block.get("displayName")
+        if not team_name:
+            continue
+        team_key = _normalize_team_name(str(team_name))
+        team_inj = block.get("injuries")
+        if not isinstance(team_inj, list):
+            continue
+        by_id: dict[str, str] = {}
+        by_name: dict[str, str] = {}
+        for inj in team_inj:
+            if not isinstance(inj, dict):
+                continue
+            athlete = inj.get("athlete")
+            if not isinstance(athlete, dict):
+                continue
+            athlete_id = _athlete_id_from_links(athlete)
+            st = _parse_status(inj)
+            if athlete_id:
+                by_id[str(athlete_id)] = st
+            name = athlete.get("displayName") or athlete.get("fullName") or athlete.get("shortName")
+            if isinstance(name, str) and name.strip():
+                by_name[name.lower().strip()] = st
+        if by_id or by_name:
+            out[team_key] = {"by_id": by_id, "by_name": by_name}
     return out
 
 
@@ -437,6 +550,7 @@ def build_watchability_df(
 
     game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
     injury_reports = _load_espn_game_injury_report_map(game_ids) if game_ids else {}
+    league_injuries_by_team = _load_espn_league_injuries_by_team(ttl_seconds=5 * 60)
 
     # NBA.com game URLs (match by PT date + teams; teams play at most once per date).
     pt_dates_iso = {
@@ -476,6 +590,12 @@ def build_watchability_df(
         for team_key, inj in (by_team or {}).items():
             if isinstance(inj, dict) and inj:
                 teams_with_injuries.add(str(team_key))
+    for team_key, payload in (league_injuries_by_team or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        by_id = payload.get("by_id")
+        if isinstance(by_id, dict) and by_id:
+            teams_with_injuries.add(str(team_key))
 
     # Star/top-scorer map needed for all teams; compute impacts once per team (cached per-athlete stats).
     # Keep this parallelized and rely on the disk HTTP cache to make warm loads fast.
@@ -516,17 +636,63 @@ def build_watchability_df(
                 sraw = sraw * sraw * sraw
                 top_scorer[k] = (best.athlete_id, best.name, sraw, ssum)
 
+    def _status_priority(status: str) -> int:
+        s = (status or "").strip().lower()
+        if "out" in s or "injur" in s:
+            return 3
+        if "doubt" in s:
+            return 2
+        if "question" in s or s in {"gtd", "dtd", "day-to-day", "day to day", "game-time decision", "game time decision"}:
+            return 1
+        return 0
+
+    def _worst_status(a: str | None, b: str | None) -> str | None:
+        if not a and not b:
+            return None
+        if not a:
+            return b
+        if not b:
+            return a
+        return a if _status_priority(a) >= _status_priority(b) else b
+
+    def _merged_team_status_map(team_key: str, game_id: str | None, *, players: list[PlayerImpact] | None = None) -> dict[str, str]:
+        by_game = injury_reports.get(str(game_id or ""), {}).get(team_key, {}) or {}
+        payload = (league_injuries_by_team or {}).get(team_key, {}) or {}
+        by_league_id = payload.get("by_id") if isinstance(payload, dict) else {}
+        by_league_name = payload.get("by_name") if isinstance(payload, dict) else {}
+
+        merged: dict[str, str] = dict(by_league_id) if isinstance(by_league_id, dict) else {}
+        for pid, st in (by_game or {}).items():
+            pid_s = str(pid)
+            w = _worst_status(merged.get(pid_s), str(st) if st is not None else None)
+            if w:
+                merged[pid_s] = w
+
+        # Name-based fallback: if athlete ids don't line up, use displayName matching.
+        if players and isinstance(by_league_name, dict) and by_league_name:
+            for p in players:
+                pid = str(p.athlete_id)
+                if pid in merged:
+                    continue
+                name_key = str(p.name).lower().strip()
+                st = by_league_name.get(name_key)
+                if st:
+                    merged[pid] = st
+        return merged
+
     def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str, str]:
         players = team_impacts.get(team_key, []) or []
-        by_team = injury_reports.get(str(game_id or ""), {}).get(team_key, {})
+        by_team = _merged_team_status_map(team_key, game_id, players=players)
 
         if not by_team:
             return 1.0, "", "[]"
 
         impact_by_id: dict[str, PlayerImpact] = {str(p.athlete_id): p for p in players}
+        top = top_scorer.get(team_key)
+        top_athlete_id = str(top[0]) if top else ""
 
         penalty = 0.0
-        injured_players: list[tuple[float, float, str]] = []
+        injured_players: list[tuple[float, float, str, str, str]] = []
         detail: list[dict[str, Any]] = []
 
         for pid, st in (by_team or {}).items():
@@ -556,7 +722,7 @@ def build_watchability_df(
             penalty += w * share
 
             health_delta = float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * w * share
-            injured_players.append((raw, share, f"{name}: {st_norm}"))
+            injured_players.append((raw, share, pid_str, name, st_norm))
             detail.append(
                 {
                     "player": name,
@@ -574,7 +740,12 @@ def build_watchability_df(
         health = max(0.0, min(1.0, float(health)))
 
         injured_players.sort(key=lambda x: x[0], reverse=True)
-        key_injuries = [s for _, share, s in injured_players if float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD]
+        key_injuries: list[str] = []
+        for raw, share, pid_str, name, st_norm in injured_players:
+            is_key = float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD
+            is_top_out = bool(top_athlete_id) and pid_str == top_athlete_id and _status_priority(st_norm) >= 3
+            if is_key or is_top_out:
+                key_injuries.append(f"{name}: {st_norm}")
 
         total_delta = sum(float(d["health_delta"]) for d in detail if d.get("health_delta") is not None)
         if total_delta > 0:
@@ -641,8 +812,8 @@ def build_watchability_df(
         if not top:
             return 0.0
         athlete_id, _, star_raw, _ = top
-        # If the top scorer appears in the injury report, apply availability scaling.
-        status = injury_reports.get(str(game_id or ""), {}).get(team_key, {}).get(str(athlete_id))
+        # Apply availability scaling using merged (league + matchup) injury info.
+        status = _merged_team_status_map(team_key, game_id, players=team_impacts.get(team_key, []) or []).get(str(athlete_id))
         status_norm = _normalize_status_for_display(status) if status else "Available"
         availability = max(0.0, 1.0 - float(injury_weight(status_norm)))
         return float(STAR_WINPCT_BUMP) * float(star_raw) * availability
