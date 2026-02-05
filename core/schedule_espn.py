@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from core.http_cache import get_json_cached
 from dateutil import parser as dtparser
 
@@ -25,7 +27,7 @@ def _format_live_clock(period, display_clock) -> str | None:
     return f"{display_clock} {ot_label}"
 
 
-def fetch_games_for_date(date):
+def fetch_games_for_date(date, *, ttl_seconds: int = 60):
     ymd = date.strftime("%Y%m%d")
     url = f"{ESPN_SCOREBOARD}?dates={ymd}"
 
@@ -33,7 +35,7 @@ def fetch_games_for_date(date):
         url,
         namespace="espn",
         cache_key=f"scoreboard:{ymd}",
-        ttl_seconds=60,
+        ttl_seconds=int(ttl_seconds),
         timeout_seconds=10,
     )
     data = resp.data

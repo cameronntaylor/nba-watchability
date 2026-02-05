@@ -48,6 +48,7 @@ def main() -> int:
             "game_date": df["Local date"].astype(str),
             "tip_time_pt": df["Tip dt (PT)"].apply(_fmt_tip),
             "time_log_utc": time_log_utc,
+            "espn_game_id": df.get("ESPN game id", pd.Series(dtype=str)).fillna("").astype(str),
             "away_team": df["Away team"].astype(str),
             "home_team": df["Home team"].astype(str),
             "away_win_pct": df["Win% (away raw)"].astype(float),
