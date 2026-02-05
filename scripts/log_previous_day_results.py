@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core.results_espn import compute_game_checkpoints, fetch_game_summary
+from core.results_espn import compute_game_checkpoints, extract_closing_spreads, fetch_game_summary
 from core.schedule_espn import fetch_games_for_date
 
 
@@ -105,6 +105,7 @@ def main() -> int:
             except Exception:
                 summary = {}
         checkpoints = compute_game_checkpoints(summary) if summary else {}
+        spreads = extract_closing_spreads(summary) if summary else {}
 
         rows.append(
             {
@@ -115,6 +116,9 @@ def main() -> int:
                 "home_team": home_team,
                 "away_score_final": away_final,
                 "home_score_final": home_final,
+                "home_spread_close": spreads.get("home_spread_close"),
+                "away_spread_close": spreads.get("away_spread_close"),
+                "spread_provider": spreads.get("spread_provider"),
                 "away_wp_swing": checkpoints.get("away_wp_swing"),
                 "away_wp_end_q1": checkpoints.get("away_wp_end_q1"),
                 "score_diff_end_q1": checkpoints.get("score_diff_end_q1"),
