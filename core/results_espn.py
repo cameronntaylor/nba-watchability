@@ -9,12 +9,17 @@ from core.http_cache import get_json_cached
 ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 
 
-def fetch_game_summary(game_id: str, *, ttl_seconds: int = 60 * 60 * 6) -> dict[str, Any]:
+def fetch_game_summary(
+    game_id: str,
+    *,
+    ttl_seconds: int = 60 * 60 * 6,
+    cache_key_prefix: str = "summary",
+) -> dict[str, Any]:
     resp = get_json_cached(
         ESPN_SUMMARY,
         params={"event": str(game_id)},
         namespace="espn",
-        cache_key=f"summary:{game_id}",
+        cache_key=f"{cache_key_prefix}:{game_id}",
         ttl_seconds=int(ttl_seconds),
         timeout_seconds=15,
     )

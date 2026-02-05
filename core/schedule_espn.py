@@ -27,14 +27,19 @@ def _format_live_clock(period, display_clock) -> str | None:
     return f"{display_clock} {ot_label}"
 
 
-def fetch_games_for_date(date, *, ttl_seconds: int = 60):
+def fetch_games_for_date(
+    date,
+    *,
+    ttl_seconds: int = 60,
+    cache_key_prefix: str = "scoreboard",
+):
     ymd = date.strftime("%Y%m%d")
     url = f"{ESPN_SCOREBOARD}?dates={ymd}"
 
     resp = get_json_cached(
         url,
         namespace="espn",
-        cache_key=f"scoreboard:{ymd}",
+        cache_key=f"{cache_key_prefix}:{ymd}",
         ttl_seconds=int(ttl_seconds),
         timeout_seconds=10,
     )
