@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core.results_espn import compute_game_checkpoints, fetch_game_summary
+from core.results_espn import compute_game_checkpoints, extract_closing_spreads, fetch_game_summary
 from core.schedule_espn import fetch_games_for_date
 
 
@@ -69,7 +69,7 @@ def main() -> int:
     games = []
     for d in scoreboard_days:
         try:
-            games.extend(fetch_games_for_date(d, ttl_seconds=60 * 15))
+            games.extend(fetch_games_for_date(d, ttl_seconds=60 * 15, cache_key_prefix="scoreboard_final"))
         except Exception as e:
             print(f"Failed to fetch ESPN scoreboard for {d.isoformat()}: {e}")
             return 0
@@ -101,10 +101,15 @@ def main() -> int:
         summary = {}
         if game_id:
             try:
-                summary = fetch_game_summary(game_id, ttl_seconds=60 * 60 * 24 * 7)
+                summary = fetch_game_summary(
+                    game_id,
+                    ttl_seconds=60 * 60 * 24 * 7,
+                    cache_key_prefix="summary_final",
+                )
             except Exception:
                 summary = {}
         checkpoints = compute_game_checkpoints(summary) if summary else {}
+        spreads = extract_closing_spreads(summary) if summary else {}
 
         rows.append(
             {
@@ -115,6 +120,9 @@ def main() -> int:
                 "home_team": home_team,
                 "away_score_final": away_final,
                 "home_score_final": home_final,
+                "home_spread_close": spreads.get("home_spread_close"),
+                "away_spread_close": spreads.get("away_spread_close"),
+                "spread_provider": spreads.get("spread_provider"),
                 "away_wp_swing": checkpoints.get("away_wp_swing"),
                 "away_wp_end_q1": checkpoints.get("away_wp_end_q1"),
                 "score_diff_end_q1": checkpoints.get("score_diff_end_q1"),

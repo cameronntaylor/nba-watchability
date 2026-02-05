@@ -19,7 +19,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core.results_espn import compute_game_checkpoints, fetch_game_summary
+from core.results_espn import compute_game_checkpoints, extract_closing_spreads, fetch_game_summary
 from core.schedule_espn import fetch_games_for_date
 
 
@@ -121,6 +121,7 @@ def main() -> int:
     p.add_argument("--sleep", type=float, default=2.0, help="Base seconds to sleep between ESPN summary calls.")
     p.add_argument("--jitter", type=float, default=1.0, help="Random jitter (+/- seconds) added to --sleep.")
     p.add_argument("--skip-existing", action="store_true", help="Skip a day if an output file already exists.")
+    p.add_argument("--verbose", action="store_true", help="Print per-day ESPN state counts for debugging.")
     p.add_argument("--out-dir", type=str, default=os.path.join("output", "logs", "results_backfill"))
     p.add_argument("--data-version", type=str, default=os.getenv("WATCHABILITY_DATA_VERSION", "v2"))
     args = p.parse_args()
@@ -134,6 +135,8 @@ def main() -> int:
     out_dir = os.path.join(PROJECT_ROOT, str(args.out_dir))
     os.makedirs(out_dir, exist_ok=True)
 
+    # Use separate cache keys for backfill so we don't accidentally reuse an old "pre/in" cached response
+    # from when the app was first opened.
     scoreboard_ttl = 365 * 24 * 60 * 60
     summary_ttl = 365 * 24 * 60 * 60
 
@@ -150,7 +153,14 @@ def main() -> int:
         # Fetch two adjacent scoreboard days and re-bucket games by PT tip date.
         games = []
         for d in (target_date, target_date + dt.timedelta(days=1)):
-            games.extend(_fetch_scoreboard_with_retry(d, ttl_seconds=scoreboard_ttl))
+            games.extend(fetch_games_for_date(d, ttl_seconds=scoreboard_ttl, cache_key_prefix="scoreboard_final"))
+
+        if args.verbose and games:
+            counts = {}
+            for g in games:
+                st = str(g.get("state") or "")
+                counts[st] = counts.get(st, 0) + 1
+            print(f"{target_date.isoformat()}: scoreboard states {counts}")
 
         post_games = []
         for g in games:
@@ -176,8 +186,13 @@ def main() -> int:
             away_final = _coerce_int(g.get("away_score"))
             home_final = _coerce_int(g.get("home_score"))
 
-            summary = _fetch_summary_with_retry(game_id, ttl_seconds=summary_ttl) if game_id else {}
+            summary = (
+                fetch_game_summary(game_id, ttl_seconds=summary_ttl, cache_key_prefix="summary_final")
+                if game_id
+                else {}
+            )
             checkpoints = compute_game_checkpoints(summary) if summary else {}
+            spreads = extract_closing_spreads(summary) if summary else {}
 
             rows.append(
                 {
@@ -188,6 +203,9 @@ def main() -> int:
                     "home_team": home_team,
                     "away_score_final": away_final,
                     "home_score_final": home_final,
+                    "home_spread_close": spreads.get("home_spread_close"),
+                    "away_spread_close": spreads.get("away_spread_close"),
+                    "spread_provider": spreads.get("spread_provider"),
                     "away_wp_swing": checkpoints.get("away_wp_swing"),
                     "away_wp_end_q1": checkpoints.get("away_wp_end_q1"),
                     "score_diff_end_q1": checkpoints.get("score_diff_end_q1"),
@@ -224,4 +242,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
