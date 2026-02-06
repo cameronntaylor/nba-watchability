@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from core.http_cache import get_json_cached
+from core.health_espn import injury_weight
 
 ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 
@@ -357,4 +358,214 @@ def extract_closing_spreads(summary: dict[str, Any]) -> dict[str, Any]:
         "home_spread_close": home_close,
         "away_spread_close": away_close,
         "spread_provider": provider,
+    }
+
+
+def extract_leading_scorers(summary: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extract per-team leading scorer (points) from ESPN summary boxscore.
+
+    Returns keys:
+      - away_leading_scorer (str|None)
+      - away_leading_scorer_pts (int|None)
+      - home_leading_scorer (str|None)
+      - home_leading_scorer_pts (int|None)
+    """
+    header = summary.get("header") or {}
+    competitions = header.get("competitions") or []
+    comp = competitions[0] if isinstance(competitions, list) and competitions and isinstance(competitions[0], dict) else {}
+    competitors = comp.get("competitors") or []
+    team_id_to_side: dict[str, str] = {}
+    for c in competitors:
+        if not isinstance(c, dict):
+            continue
+        team = c.get("team") or {}
+        tid = team.get("id")
+        side = c.get("homeAway")
+        if tid is None or side not in {"home", "away"}:
+            continue
+        team_id_to_side[str(tid)] = str(side)
+
+    box = summary.get("boxscore") or {}
+    player_blocks = box.get("players") or []
+    if not isinstance(player_blocks, list):
+        player_blocks = []
+
+    out: dict[str, Any] = {
+        "away_leading_scorer": None,
+        "away_leading_scorer_pts": None,
+        "home_leading_scorer": None,
+        "home_leading_scorer_pts": None,
+    }
+
+    def _parse_int(x: Any) -> int | None:
+        try:
+            if x is None:
+                return None
+            return int(float(str(x).strip()))
+        except Exception:
+            return None
+
+    def _consider(side: str, name: str | None, pts: int | None) -> None:
+        if side not in {"home", "away"} or not name or pts is None:
+            return
+        key_name = f"{side}_leading_scorer"
+        key_pts = f"{side}_leading_scorer_pts"
+        cur = out.get(key_pts)
+        if cur is None or pts > int(cur):
+            out[key_name] = str(name)
+            out[key_pts] = int(pts)
+
+    for block in player_blocks:
+        if not isinstance(block, dict):
+            continue
+        team = block.get("team") or {}
+        team_id = team.get("id")
+        if team_id is None:
+            continue
+        side = team_id_to_side.get(str(team_id))
+        if side not in {"home", "away"}:
+            continue
+
+        statistics = block.get("statistics") or []
+        if not isinstance(statistics, list):
+            continue
+        if not statistics:
+            continue
+        stat0 = statistics[0] if isinstance(statistics[0], dict) else {}
+        labels = stat0.get("labels") or []
+        if not isinstance(labels, list) or "PTS" not in labels:
+            continue
+        pts_idx = labels.index("PTS")
+
+        athletes = stat0.get("athletes") or []
+        if not isinstance(athletes, list):
+            continue
+        for a in athletes:
+            if not isinstance(a, dict):
+                continue
+            athlete = a.get("athlete") or {}
+            name = athlete.get("displayName") or athlete.get("fullName") or athlete.get("shortName")
+            stats = a.get("stats") or []
+            if not isinstance(stats, list) or pts_idx >= len(stats):
+                continue
+            pts = _parse_int(stats[pts_idx])
+            _consider(side, name, pts)
+
+    return out
+
+
+def _normalize_status(status: str | None) -> str:
+    s = (status or "").strip()
+    if not s:
+        return "Available"
+    if s.upper() == "GTD":
+        return "GTD"
+    if s.lower() in {"day-to-day", "day to day", "daytoday", "dtd"}:
+        return "GTD"
+    return s
+
+
+def _status_priority(status_norm: str) -> int:
+    s = str(status_norm or "").strip().lower()
+    if s == "out":
+        return 4
+    if s == "doubtful":
+        return 3
+    if s in {"questionable", "gtd"}:
+        return 2
+    if s == "probable":
+        return 1
+    return 0
+
+
+def extract_game_injuries_detail(summary: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extract per-game injury report from ESPN summary JSON.
+
+    Returns JSON strings similar in spirit to the Watchability DF's injuries detail JSON,
+    but without impact-share/health-delta (not available from the boxscore alone).
+
+    Keys returned:
+      - away_injuries_detail_json (str; JSON array)
+      - home_injuries_detail_json (str; JSON array)
+    """
+    header = summary.get("header") or {}
+    competitions = header.get("competitions") or []
+    comp = competitions[0] if isinstance(competitions, list) and competitions and isinstance(competitions[0], dict) else {}
+    competitors = comp.get("competitors") or []
+    team_id_to_side: dict[str, str] = {}
+    for c in competitors:
+        if not isinstance(c, dict):
+            continue
+        team = c.get("team") or {}
+        tid = team.get("id")
+        side = c.get("homeAway")
+        if tid is None or side not in {"home", "away"}:
+            continue
+        team_id_to_side[str(tid)] = str(side)
+
+    out_by_side: dict[str, list[dict[str, Any]]] = {"home": [], "away": []}
+    blocks = summary.get("injuries")
+    if not isinstance(blocks, list):
+        return {"away_injuries_detail_json": "[]", "home_injuries_detail_json": "[]"}
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        team = block.get("team") or {}
+        team_id = team.get("id")
+        side = team_id_to_side.get(str(team_id)) if team_id is not None else None
+        if side not in {"home", "away"}:
+            continue
+
+        injuries = block.get("injuries")
+        if not isinstance(injuries, list):
+            continue
+
+        for inj in injuries:
+            if not isinstance(inj, dict):
+                continue
+            athlete = inj.get("athlete") or {}
+            athlete_id = athlete.get("id")
+            name = athlete.get("displayName") or athlete.get("fullName") or athlete.get("shortName")
+            status_norm = _normalize_status(inj.get("status") if isinstance(inj.get("status"), str) else None)
+
+            details = inj.get("details") if isinstance(inj.get("details"), dict) else {}
+            detail_txt = details.get("detail") if isinstance(details.get("detail"), str) else None
+            injury_type = details.get("type") if isinstance(details.get("type"), str) else None
+            return_date = details.get("returnDate") if isinstance(details.get("returnDate"), str) else None
+
+            try:
+                w = float(injury_weight(status_norm))
+            except Exception:
+                w = None
+
+            out_by_side[side].append(
+                {
+                    "player": str(name or ""),
+                    "player_id": str(athlete_id) if athlete_id is not None else "",
+                    "status": status_norm,
+                    "injury_weight": w,
+                    "type": injury_type,
+                    "detail": detail_txt,
+                    "return_date": return_date,
+                }
+            )
+
+    def _sort_key(d: dict[str, Any]):
+        return (
+            -_status_priority(str(d.get("status") or "")),
+            -float(d.get("injury_weight") or 0.0),
+            str(d.get("player") or ""),
+        )
+
+    for side in ("away", "home"):
+        out_by_side[side].sort(key=_sort_key)
+
+    import json as _json
+
+    return {
+        "away_injuries_detail_json": _json.dumps(out_by_side["away"], ensure_ascii=False),
+        "home_injuries_detail_json": _json.dumps(out_by_side["home"], ensure_ascii=False),
     }
