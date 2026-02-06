@@ -52,6 +52,16 @@ def fetch_games_for_date(
 
         home = next(t for t in teams if t["homeAway"] == "home")
         away = next(t for t in teams if t["homeAway"] == "away")
+        home_record = None
+        away_record = None
+        for r in home.get("records") or []:
+            if isinstance(r, dict) and r.get("name") == "overall":
+                home_record = r.get("summary")
+                break
+        for r in away.get("records") or []:
+            if isinstance(r, dict) and r.get("name") == "overall":
+                away_record = r.get("summary")
+                break
 
         status_obj = competition.get("status", {})
         status = status_obj.get("type", {}).get("state")  # pre / in / post
@@ -66,6 +76,8 @@ def fetch_games_for_date(
             "start_time_utc": start_time,
             "home_team": home["team"]["displayName"],
             "away_team": away["team"]["displayName"],
+            "home_record": home_record,
+            "away_record": away_record,
             "state": status,
             "home_score": home.get("score"),
             "away_score": away.get("score"),

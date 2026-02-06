@@ -19,7 +19,12 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from core.results_espn import compute_game_checkpoints, extract_closing_spreads, fetch_game_summary
+from core.results_espn import (
+    compute_game_checkpoints,
+    extract_closing_spreads,
+    extract_leading_scorers,
+    fetch_game_summary,
+)
 from core.schedule_espn import fetch_games_for_date
 
 
@@ -193,6 +198,7 @@ def main() -> int:
             )
             checkpoints = compute_game_checkpoints(summary) if summary else {}
             spreads = extract_closing_spreads(summary) if summary else {}
+            scorers = extract_leading_scorers(summary) if summary else {}
 
             rows.append(
                 {
@@ -201,11 +207,17 @@ def main() -> int:
                     "espn_game_id": game_id,
                     "away_team": away_team,
                     "home_team": home_team,
+                    "away_record": str(g.get("away_record") or ""),
+                    "home_record": str(g.get("home_record") or ""),
                     "away_score_final": away_final,
                     "home_score_final": home_final,
                     "home_spread_close": spreads.get("home_spread_close"),
                     "away_spread_close": spreads.get("away_spread_close"),
                     "spread_provider": spreads.get("spread_provider"),
+                    "away_leading_scorer": scorers.get("away_leading_scorer"),
+                    "away_leading_scorer_pts": scorers.get("away_leading_scorer_pts"),
+                    "home_leading_scorer": scorers.get("home_leading_scorer"),
+                    "home_leading_scorer_pts": scorers.get("home_leading_scorer_pts"),
                     "away_wp_swing": checkpoints.get("away_wp_swing"),
                     "away_wp_end_q1": checkpoints.get("away_wp_end_q1"),
                     "score_diff_end_q1": checkpoints.get("score_diff_end_q1"),

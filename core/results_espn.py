@@ -358,3 +358,97 @@ def extract_closing_spreads(summary: dict[str, Any]) -> dict[str, Any]:
         "away_spread_close": away_close,
         "spread_provider": provider,
     }
+
+
+def extract_leading_scorers(summary: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extract per-team leading scorer (points) from ESPN summary boxscore.
+
+    Returns keys:
+      - away_leading_scorer (str|None)
+      - away_leading_scorer_pts (int|None)
+      - home_leading_scorer (str|None)
+      - home_leading_scorer_pts (int|None)
+    """
+    header = summary.get("header") or {}
+    competitions = header.get("competitions") or []
+    comp = competitions[0] if isinstance(competitions, list) and competitions and isinstance(competitions[0], dict) else {}
+    competitors = comp.get("competitors") or []
+    team_id_to_side: dict[str, str] = {}
+    for c in competitors:
+        if not isinstance(c, dict):
+            continue
+        team = c.get("team") or {}
+        tid = team.get("id")
+        side = c.get("homeAway")
+        if tid is None or side not in {"home", "away"}:
+            continue
+        team_id_to_side[str(tid)] = str(side)
+
+    box = summary.get("boxscore") or {}
+    player_blocks = box.get("players") or []
+    if not isinstance(player_blocks, list):
+        player_blocks = []
+
+    out: dict[str, Any] = {
+        "away_leading_scorer": None,
+        "away_leading_scorer_pts": None,
+        "home_leading_scorer": None,
+        "home_leading_scorer_pts": None,
+    }
+
+    def _parse_int(x: Any) -> int | None:
+        try:
+            if x is None:
+                return None
+            return int(float(str(x).strip()))
+        except Exception:
+            return None
+
+    def _consider(side: str, name: str | None, pts: int | None) -> None:
+        if side not in {"home", "away"} or not name or pts is None:
+            return
+        key_name = f"{side}_leading_scorer"
+        key_pts = f"{side}_leading_scorer_pts"
+        cur = out.get(key_pts)
+        if cur is None or pts > int(cur):
+            out[key_name] = str(name)
+            out[key_pts] = int(pts)
+
+    for block in player_blocks:
+        if not isinstance(block, dict):
+            continue
+        team = block.get("team") or {}
+        team_id = team.get("id")
+        if team_id is None:
+            continue
+        side = team_id_to_side.get(str(team_id))
+        if side not in {"home", "away"}:
+            continue
+
+        statistics = block.get("statistics") or []
+        if not isinstance(statistics, list):
+            continue
+        if not statistics:
+            continue
+        stat0 = statistics[0] if isinstance(statistics[0], dict) else {}
+        labels = stat0.get("labels") or []
+        if not isinstance(labels, list) or "PTS" not in labels:
+            continue
+        pts_idx = labels.index("PTS")
+
+        athletes = stat0.get("athletes") or []
+        if not isinstance(athletes, list):
+            continue
+        for a in athletes:
+            if not isinstance(a, dict):
+                continue
+            athlete = a.get("athlete") or {}
+            name = athlete.get("displayName") or athlete.get("fullName") or athlete.get("shortName")
+            stats = a.get("stats") or []
+            if not isinstance(stats, list) or pts_idx >= len(stats):
+                continue
+            pts = _parse_int(stats[pts_idx])
+            _consider(side, name, pts)
+
+    return out
