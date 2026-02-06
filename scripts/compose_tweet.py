@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import date
+import datetime as dt
 import os
 import sys
 
 from dateutil import tz
-from dateutil import parser as dtparser
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -15,14 +14,12 @@ import core.watchability as watch
 from core.build_watchability_df import build_watchability_df
 
 
-def _bucket_summary() -> str | None:
+def _bucket_counts() -> dict[str, int] | None:
     """
-    Returns a short string like:
-    '2 Must Watch Games, 3 Strong Watch Games, 4 Watchable Games, 1 Skippable Games and 0 Hard Skip Games'
-    for today's PT slate.
+    Returns bucket counts for today's PT slate.
     """
     local_tz = tz.gettz("America/Los_Angeles")
-    today_local = date.today()
+    today_local = dt.datetime.now(local_tz).date()
 
     df = build_watchability_df(days_ahead=2, tz_name="America/Los_Angeles", include_post=False)
     if df.empty:
@@ -45,28 +42,35 @@ def _bucket_summary() -> str | None:
         if b in counts:
             counts[b] += 1
 
-    x1 = counts["Must Watch"]
-    x2 = counts["Strong Watch"]
-    x3 = counts["Watchable"]
-    x4 = counts["Skippable"]
-    x5 = counts["Hard Skip"]
-    return (
-        f"{x1} Must Watch Game(s), {x2} Strong Watch Game(s), {x3} Watchable Game(s), "
-        f"{x4} Skippable Game(s) and {x5} Hard Skip Game(s)"
-    )
+    return counts
 
-def compose_tweet_text():
-    today = date.today().strftime("%b %d")
-    avg_line = None
+def compose_tweet_text() -> str:
+    local_tz = tz.gettz("America/Los_Angeles")
+    today_dt = dt.datetime.now(local_tz)
+    today = f"{today_dt.strftime('%b')} {today_dt.day}"
+
+    counts = None
     try:
-        avg_line = _bucket_summary()
+        counts = _bucket_counts()
     except Exception:
-        avg_line = None
+        counts = None
 
     parts = [f"🏀 NBA Watchability — {today}"]
-    if avg_line:
-        parts.append(avg_line)
     parts.append("")
-    parts.append("What to watch tonight, ranked by Watchability (competitiveness + injury-adjusted team quality).")
-    parts.append("See the full dashboard: https://nba-watchability.streamlit.app/")
+
+    if counts:
+        parts.append(
+            "Must Watch: {mw} | Strong: {s} | Watchable: {w} | Skip: {sk} | Hard Skip: {hs}".format(
+                mw=int(counts.get("Must Watch", 0)),
+                s=int(counts.get("Strong Watch", 0)),
+                w=int(counts.get("Watchable", 0)),
+                sk=int(counts.get("Skippable", 0)),
+                hs=int(counts.get("Hard Skip", 0)),
+            )
+        )
+    else:
+        parts.append("Must Watch: ? | Strong: ? | Watchable: ? | Skip: ? | Hard Skip: ?")
+
+    parts.append("")
+    parts.append("Full slate + details: https://nba-watchability.streamlit.app/")
     return "\n".join(parts)
