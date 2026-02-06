@@ -17,6 +17,7 @@ if PROJECT_ROOT not in sys.path:
 
 from core.results_espn import (
     compute_game_checkpoints,
+    extract_game_injuries_detail,
     extract_closing_spreads,
     extract_leading_scorers,
     fetch_game_summary,
@@ -116,6 +117,7 @@ def main() -> int:
         checkpoints = compute_game_checkpoints(summary) if summary else {}
         spreads = extract_closing_spreads(summary) if summary else {}
         scorers = extract_leading_scorers(summary) if summary else {}
+        injuries = extract_game_injuries_detail(summary) if summary else {}
 
         rows.append(
             {
@@ -135,6 +137,8 @@ def main() -> int:
                 "away_leading_scorer_pts": scorers.get("away_leading_scorer_pts"),
                 "home_leading_scorer": scorers.get("home_leading_scorer"),
                 "home_leading_scorer_pts": scorers.get("home_leading_scorer_pts"),
+                "away_injuries_detail_json": injuries.get("away_injuries_detail_json", "[]"),
+                "home_injuries_detail_json": injuries.get("home_injuries_detail_json", "[]"),
                 "away_wp_swing": checkpoints.get("away_wp_swing"),
                 "away_wp_end_q1": checkpoints.get("away_wp_end_q1"),
                 "score_diff_end_q1": checkpoints.get("score_diff_end_q1"),
