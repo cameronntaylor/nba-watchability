@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import datetime as dt
+from datetime import date
 import os
 import sys
 
 from dateutil import tz
+from dateutil import parser as dtparser
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -14,65 +15,56 @@ import core.watchability as watch
 from core.build_watchability_df import build_watchability_df
 
 
-def _choose_slate_date(df) -> dt.date | None:
+def _bucket_summary() -> str | None:
+    """
+    Returns a short string like:
+    '2 Must Watch Games, 3 Strong Watch Games, 4 Watchable Games, 1 Skippable Games and 0 Hard Skip Games'
+    for today's PT slate.
+    """
     local_tz = tz.gettz("America/Los_Angeles")
-    today_local = dt.datetime.now(local_tz).date()
+    today_local = date.today()
+
+    df = build_watchability_df(days_ahead=2, tz_name="America/Los_Angeles", include_post=False)
+    if df.empty:
+        return None
+
     dates = sorted({d for d in df["Local date"].dropna().tolist()})
     if not dates:
         return None
-    return today_local if today_local in dates else dates[0]
 
+    selected_date = today_local if today_local in dates else dates[0]
+    wis = df[df["Local date"] == selected_date]["aWI"].astype(float).dropna().tolist()
 
-def _bucket_counts(df, selected_date: dt.date) -> dict[str, int]:
+    if not wis:
+        return None
+
     buckets = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
     counts = {b: 0 for b in buckets}
-    slate = df[df["Local date"] == selected_date]
-
-    # Prefer using the already-computed labels in the DF to avoid any float/threshold drift.
-    if "Region" in slate.columns:
-        for lbl in slate["Region"].dropna().astype(str).tolist():
-            b = lbl.strip()
-            if b in counts:
-                counts[b] += 1
-        return counts
-
-    # Fallback: recompute from WI.
-    for wi in slate.get("aWI", []).astype(float).dropna().tolist() if len(slate) else []:
+    for wi in wis:
         b = watch.awi_label(float(wi))
         if b in counts:
             counts[b] += 1
-    return counts
 
-def compose_tweet_text() -> str:
-    local_tz = tz.gettz("America/Los_Angeles")
-    df = build_watchability_df(days_ahead=2, tz_name="America/Los_Angeles", include_post=False)
-    selected_date = _choose_slate_date(df) if not df.empty else None
-    header_date = selected_date or dt.datetime.now(local_tz).date()
-    today = f"{header_date.strftime('%b')} {header_date.day}"
+    x1 = counts["Must Watch"]
+    x2 = counts["Strong Watch"]
+    x3 = counts["Watchable"]
+    x4 = counts["Skippable"]
+    x5 = counts["Hard Skip"]
+    return (
+        f"Must Watch: {x1} | Strong: {x2} | Watchable: {x3} | Skippable: {x4} | Hard Skip: {x5}"
+    )
 
-    counts = None
+def compose_tweet_text():
+    today = date.today().strftime("%b %d")
+    avg_line = None
     try:
-        if selected_date and not df.empty:
-            counts = _bucket_counts(df, selected_date)
+        avg_line = _bucket_summary()
     except Exception:
-        counts = None
+        avg_line = None
 
     parts = [f"🏀 NBA Watchability — {today}"]
+    if avg_line:
+        parts.append(avg_line)
     parts.append("")
-
-    if counts:
-        parts.append(
-            "Must Watch: {mw} | Strong: {s} | Watchable: {w} | Skip: {sk} | Hard Skip: {hs}".format(
-                mw=int(counts.get("Must Watch", 0)),
-                s=int(counts.get("Strong Watch", 0)),
-                w=int(counts.get("Watchable", 0)),
-                sk=int(counts.get("Skippable", 0)),
-                hs=int(counts.get("Hard Skip", 0)),
-            )
-        )
-    else:
-        parts.append("Must Watch: ? | Strong: ? | Watchable: ? | Skip: ? | Hard Skip: ?")
-
-    parts.append("")
-    parts.append("Full slate + details: https://nba-watchability.streamlit.app/")
+    parts.append("Full slate + details:: https://nba-watchability.streamlit.app/")
     return "\n".join(parts)
