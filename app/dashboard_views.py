@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as py_html
+import json
 import os
 import sys
 import datetime as dt
@@ -387,7 +388,8 @@ def render_chart(
     date_to_label: dict[str, str],
     show_day_selector: bool,
     selected_date: str | None,
-) -> None:
+    default_day: str | None = None,
+) -> str | None:
     QUALITY_FLOOR = getattr(watch, "QUALITY_FLOOR", 0.1)
     CLOSENESS_FLOOR = getattr(watch, "CLOSENESS_FLOOR", 0.1)
 
@@ -400,13 +402,15 @@ def render_chart(
         df_plot["Away Star Factor"] = df_plot["Away Star Factor"].fillna("")
     if "Home Star Factor" in df_plot.columns:
         df_plot["Home Star Factor"] = df_plot["Home Star Factor"].fillna("")
+    selected: str | None = None
     if date_options:
         if show_day_selector:
+            default_value = default_day if (default_day in date_options) else date_options[0]
             selected = st.segmented_control(
                 "Day",
                 options=date_options,
                 format_func=lambda x: date_to_label.get(x, x),
-                default=date_options[0],
+                default=default_value,
             )
         else:
             selected = selected_date if selected_date in date_options else date_options[0]
@@ -683,6 +687,7 @@ def render_chart(
         + chart_legend
     ).resolve_scale(x="shared", y="shared").properties(height=560)
     st.altair_chart(chart, use_container_width=True)
+    return selected
 
 
 def _render_menu_row(r) -> str:
@@ -924,17 +929,71 @@ def render_full_dashboard(title: str, caption: str) -> None:
 
     df, df_dates, date_options, date_to_label = build_dashboard_frames()
 
+    default_day = None
+    try:
+        default_day = st.query_params.get("day")
+    except Exception:
+        default_day = None
+
     left, right = st.columns([1.05, 1.0], gap="large")
     with left:
-        render_chart(
+        selected = render_chart(
             df=df,
             date_options=date_options,
             date_to_label=date_to_label,
             show_day_selector=True,
             selected_date=None,
+            default_day=default_day,
         )
     with right:
         render_table(df=df, df_dates=df_dates, date_options=date_options)
+
+    # Hidden machine-readable metadata so the bot can align tweet text
+    # with the exact slate rendered on the deployed dashboard.
+    try:
+        slate = selected if (selected in (date_options or [])) else (date_options[0] if date_options else None)
+        if slate:
+            df_slate = df[df["Local date"].astype(str) == slate].copy()
+        else:
+            df_slate = df.copy()
+
+        counts: dict[str, int] = {}
+        if not df_slate.empty and "Region" in df_slate.columns:
+            vc = df_slate["Region"].astype(str).value_counts()
+            counts = {str(k): int(v) for k, v in vc.items()}
+
+        slate_date = None
+        if not df_slate.empty and "Local date" in df_slate.columns:
+            try:
+                slate_date = df_slate["Local date"].dropna().iloc[0]
+            except Exception:
+                slate_date = None
+
+        tweet_date = None
+        if isinstance(slate_date, dt.date):
+            tweet_date = slate_date.strftime("%b %d").replace(" 0", " ")
+        elif isinstance(slate, str) and len(slate) == 10:
+            try:
+                y, m, d = (int(x) for x in slate.split("-"))
+                tweet_date = dt.date(y, m, d).strftime("%b %d").replace(" 0", " ")
+            except Exception:
+                tweet_date = None
+
+        matchups: dict[str, list[str]] = {}
+        if not df_slate.empty and {"Region", "Matchup"}.issubset(df_slate.columns):
+            for region, grp in df_slate.groupby(df_slate["Region"].astype(str)):
+                matchups[str(region)] = [str(x) for x in grp["Matchup"].astype(str).tolist()]
+
+        meta = {
+            "slate_day": slate,
+            "tweet_date": tweet_date,
+            "counts": counts,
+            "matchups": matchups,
+        }
+        meta_attr = py_html.escape(json.dumps(meta, ensure_ascii=False))
+        st.markdown(f"<div id='tweet-meta' data-meta='{meta_attr}' style='display:none;'></div>", unsafe_allow_html=True)
+    except Exception:
+        pass
 
 
 def render_chart_page() -> None:
@@ -947,6 +1006,7 @@ def render_chart_page() -> None:
         date_to_label=date_to_label,
         show_day_selector=False,
         selected_date=selected,
+        default_day=None,
     )
 
 
