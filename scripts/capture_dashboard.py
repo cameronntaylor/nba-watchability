@@ -1,4 +1,6 @@
 from pathlib import Path
+import html as html_lib
+import json
 import os
 import time
 
@@ -14,6 +16,7 @@ OUT_DIR = Path("output")
 FULL_IMG = OUT_DIR / "full.png"
 CHART_IMG = OUT_DIR / "chart.png"
 TABLE_IMG = OUT_DIR / "table.png"
+TWEET_META = OUT_DIR / "tweet_meta.json"
 
 # --- Chart crop (historical defaults) ---
 CHART_LEFT_PAD = int(os.getenv("CHART_LEFT_PAD", "125"))
@@ -43,6 +46,18 @@ def capture_dashboard():
         page.goto(DASHBOARD_URL, timeout=60_000)
         page.wait_for_load_state("networkidle", timeout=60_000)
         time.sleep(6)  # allow Altair + logos to render
+
+        # Capture hidden tweet metadata from the deployed dashboard (if available)
+        # so the tweet text can match the exact slate rendered in the screenshot.
+        try:
+            page.wait_for_selector("#tweet-meta", timeout=30_000)
+            meta_attr = page.locator("#tweet-meta").get_attribute("data-meta")
+            if meta_attr:
+                meta = json.loads(html_lib.unescape(meta_attr))
+                TWEET_META.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                print(f"Saved tweet metadata to {TWEET_META}")
+        except Exception:
+            pass
 
         page.screenshot(path=str(FULL_IMG), full_page=False)
         browser.close()

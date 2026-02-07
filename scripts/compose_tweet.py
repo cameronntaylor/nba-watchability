@@ -1,70 +1,99 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+import json
 import os
 import sys
 
 from dateutil import tz
-from dateutil import parser as dtparser
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import core.watchability as watch
 from core.build_watchability_df import build_watchability_df
 
 
-def _bucket_summary() -> str | None:
-    """
-    Returns a short string like:
-    '2 Must Watch Games, 3 Strong Watch Games, 4 Watchable Games, 1 Skippable Games and 0 Hard Skip Games'
-    for today's PT slate.
-    """
-    local_tz = tz.gettz("America/Los_Angeles")
-    today_local = date.today()
+TWEET_META_PATH = Path("output") / "tweet_meta.json"
 
+
+def _try_load_counts_from_dashboard_meta() -> tuple[str | None, dict[str, int] | None, dict | None]:
+    if not TWEET_META_PATH.exists():
+        return None, None, None
+    try:
+        meta = json.loads(TWEET_META_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None, None
+
+    tweet_date = meta.get("tweet_date")
+    counts_raw = meta.get("counts")
+    if not isinstance(counts_raw, dict):
+        return tweet_date if isinstance(tweet_date, str) else None, None, meta
+
+    counts: dict[str, int] = {}
+    for k, v in counts_raw.items():
+        try:
+            counts[str(k)] = int(v)
+        except Exception:
+            continue
+    return tweet_date if isinstance(tweet_date, str) else None, counts, meta
+
+
+def _bucket_summary_from_counts(counts: dict[str, int]) -> str:
+    x1 = int(counts.get("Must Watch", 0))
+    x2 = int(counts.get("Strong Watch", 0))
+    x3 = int(counts.get("Watchable", 0))
+    x4 = int(counts.get("Skippable", 0))
+    x5 = int(counts.get("Hard Skip", 0))
+    return f"Must Watch: {x1} | Strong: {x2} | Watchable: {x3} | Skip: {x4} | Hard Skip: {x5}"
+
+
+def _bucket_summary_fallback() -> tuple[str | None, str | None]:
     df = build_watchability_df(days_ahead=2, tz_name="America/Los_Angeles", include_post=False)
-    if df.empty:
-        return None
+    if df.empty or "Local date" not in df.columns:
+        return None, None
 
     dates = sorted({d for d in df["Local date"].dropna().tolist()})
     if not dates:
-        return None
+        return None, None
 
-    selected_date = today_local if today_local in dates else dates[0]
-    wis = df[df["Local date"] == selected_date]["aWI"].astype(float).dropna().tolist()
+    # Match dashboard default: earliest PT slate in the window.
+    selected_date = dates[0]
+    df_slate = df[df["Local date"] == selected_date].copy()
+    if df_slate.empty or "Region" not in df_slate.columns:
+        return None, None
 
-    if not wis:
-        return None
-
-    buckets = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
-    counts = {b: 0 for b in buckets}
-    for wi in wis:
-        b = watch.awi_label(float(wi))
-        if b in counts:
-            counts[b] += 1
-
-    x1 = counts["Must Watch"]
-    x2 = counts["Strong Watch"]
-    x3 = counts["Watchable"]
-    x4 = counts["Skippable"]
-    x5 = counts["Hard Skip"]
-    return (
-        f"Must Watch: {x1} | Strong: {x2} | Watchable: {x3} | Skippable: {x4} | Hard Skip: {x5}"
-    )
+    counts = df_slate["Region"].astype(str).value_counts()
+    summary = _bucket_summary_from_counts({str(k): int(v) for k, v in counts.items()})
+    tweet_date = selected_date.strftime("%b %d").replace(" 0", " ")
+    return tweet_date, summary
 
 def compose_tweet_text():
-    today = date.today().strftime("%b %d")
-    avg_line = None
-    try:
-        avg_line = _bucket_summary()
-    except Exception:
-        avg_line = None
+    tweet_date, counts, meta = _try_load_counts_from_dashboard_meta()
+    summary = None
 
-    parts = [f"🏀 NBA Watchability — {today}"]
-    if avg_line:
-        parts.append(avg_line)
-    parts.append("")
-    parts.append("Full slate + details:: https://nba-watchability.streamlit.app/")
+    if counts:
+        summary = _bucket_summary_from_counts(counts)
+        if meta:
+            slate_day = meta.get("slate_day")
+            print(f"[tweet] using dashboard meta (slate_day={slate_day}) -> {summary}")
+    else:
+        try:
+            tweet_date, summary = _bucket_summary_fallback()
+            if summary:
+                print(f"[tweet] using fallback computation -> {summary}")
+        except Exception:
+            summary = None
+
+    if not tweet_date:
+        # Last resort: PT calendar date.
+        tweet_date = date.today().strftime("%b %d").replace(" 0", " ")
+
+    parts = [f"🏀 NBA Watchability — {tweet_date}", ""]
+    if summary:
+        parts.append("")
+        parts.append(summary)
+        parts.append("")
+    parts.append("Full slate + details: https://nba-watchability.streamlit.app/")
     return "\n".join(parts)
