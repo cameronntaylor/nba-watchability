@@ -10,6 +10,7 @@ from core.watchability_v2_params import (
     INJURY_WEIGHT_AVAILABLE,
     INJURY_WEIGHT_DOUBTFUL,
     INJURY_WEIGHT_OUT,
+    INJURY_WEIGHT_PROBABLE,
     INJURY_WEIGHT_QUESTIONABLE,
     INJURY_OVERALL_IMPORTANCE_WEIGHT,
 )
@@ -71,7 +72,7 @@ def _injury_weight(status: str) -> float:
     if s in {"gtd", "dtd", "day-to-day", "day to day", "game-time decision", "game time decision"}:
         return INJURY_WEIGHT_QUESTIONABLE
     if "prob" in s:
-        return INJURY_WEIGHT_AVAILABLE
+        return INJURY_WEIGHT_PROBABLE
     if "active" in s or "available" in s or "probable" in s:
         return INJURY_WEIGHT_AVAILABLE
     return INJURY_WEIGHT_AVAILABLE

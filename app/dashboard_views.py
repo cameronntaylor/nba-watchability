@@ -287,6 +287,8 @@ def _normalize_status_for_display(status: str | None) -> str:
     s = (status or "").strip()
     if not s:
         return "Available"
+    if s.upper() == "OUT":
+        return "Out"
     if s.upper() == "GTD":
         return "GTD"
     return s
