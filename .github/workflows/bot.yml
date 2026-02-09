@@ -45,12 +45,11 @@ jobs:
       - name: Install Playwright browser
         run: python -m playwright install chromium
 
+      - name: Log daily Watchability scores
+        run: python scripts/log_daily_scores.py
+
       - name: Run bot and post tweet
         run: python scripts/run_bot.py
-
-      - name: Log daily Watchability scores
-        if: always()
-        run: python scripts/log_daily_scores.py
 
       - name: Log previous-day game results
         if: always()
@@ -64,6 +63,7 @@ jobs:
           path: |
             output/chart.png
             output/table.png
+            output/tweet_meta.json
 
       - name: Upload daily logs artifact
         if: always()
