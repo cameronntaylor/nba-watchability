@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import os
 import sys
+import csv
 
 from dateutil import tz
 
@@ -16,6 +17,7 @@ from core.build_watchability_df import build_watchability_df
 
 
 TWEET_META_PATH = Path("output") / "tweet_meta.json"
+LOGS_DIR = Path("output") / "logs"
 
 
 def _try_load_counts_from_dashboard_meta() -> tuple[str | None, dict[str, int] | None, dict | None]:
@@ -48,6 +50,43 @@ def _bucket_summary_from_counts(counts: dict[str, int]) -> str:
     x5 = int(counts.get("Hard Skip", 0))
     return f"Must Watch: {x1} | Strong: {x2} | Watchable: {x3} | Skip: {x4} | Hard Skip: {x5}"
 
+def _try_load_counts_from_latest_log() -> tuple[str | None, dict[str, int] | None]:
+    if not LOGS_DIR.exists():
+        return None, None
+    csv_files = sorted(LOGS_DIR.glob("watchability_*.csv"))
+    if not csv_files:
+        return None, None
+    latest = max(csv_files, key=lambda p: p.stat().st_mtime)
+    try:
+        with latest.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+    except Exception:
+        return None, None
+    if not rows:
+        return None, None
+
+    # Match dashboard default: earliest PT slate in the window.
+    dates = sorted({str(r.get("game_date") or "").strip() for r in rows if str(r.get("game_date") or "").strip()})
+    if not dates:
+        return None, None
+    slate_day = dates[0]
+    slate_rows = [r for r in rows if str(r.get("game_date") or "").strip() == slate_day]
+    counts: dict[str, int] = {}
+    for r in slate_rows:
+        label = str(r.get("text_label") or "").strip()
+        if not label:
+            continue
+        counts[label] = counts.get(label, 0) + 1
+
+    tweet_date = None
+    try:
+        y, m, d = (int(x) for x in slate_day.split("-"))
+        tweet_date = date(y, m, d).strftime("%b %d").replace(" 0", " ")
+    except Exception:
+        tweet_date = None
+    return tweet_date, counts
+
 
 def _bucket_summary_fallback() -> tuple[str | None, str | None]:
     df = build_watchability_df(days_ahead=2, tz_name="America/Los_Angeles", include_post=False)
@@ -70,6 +109,18 @@ def _bucket_summary_fallback() -> tuple[str | None, str | None]:
     return tweet_date, summary
 
 def compose_tweet_text():
+    # Prefer counts from the locally-logged watchability dataframe (same computation as artifacts).
+    tweet_date, counts = _try_load_counts_from_latest_log()
+    if counts:
+        summary = _bucket_summary_from_counts(counts)
+        print(f"[tweet] using latest log -> {summary}")
+        parts = [f"🏀 NBA Watchability — {tweet_date or date.today().strftime('%b %d').replace(' 0', ' ')}", ""]
+        parts.append("")
+        parts.append(summary)
+        parts.append("")
+        parts.append("Full slate + details: https://nba-watchability.streamlit.app/")
+        return "\n".join(parts)
+
     tweet_date, counts, meta = _try_load_counts_from_dashboard_meta()
     summary = None
 
