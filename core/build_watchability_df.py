@@ -44,6 +44,8 @@ def _normalize_status_for_display(status: str | None) -> str:
     s = (status or "").strip()
     if not s:
         return "Available"
+    if s.upper() == "OUT":
+        return "Out"
     if s.upper() == "GTD":
         return "GTD"
     if s.lower() in {"day-to-day", "day to day", "daytoday", "dtd"}:
@@ -118,7 +120,12 @@ def _load_espn_game_map(local_dates_iso: list[str]) -> dict[tuple[str, str, str]
 def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[str, dict[str, dict[str, str]]]:
     """
     Returns:
-      team_key -> {"by_id": {athlete_id: status}, "by_name": {normalized_name: status}}
+      team_key -> {
+        "by_id": {athlete_id: fantasy_status_abbr},
+        "by_name": {normalized_name: fantasy_status_abbr},
+        "detail_by_id": {athlete_id: {"abbr": str, "shortComment": str, "longComment": str}},
+        "detail_by_name": {normalized_name: {"abbr": str, "shortComment": str, "longComment": str}},
+      }
 
     Uses ESPN's league injuries endpoint (more comprehensive than per-game summary injuries list):
       https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries
@@ -141,6 +148,9 @@ def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[st
         return {}
 
     def _athlete_id_from_links(athlete: dict[str, Any]) -> str | None:
+        athlete_id = athlete.get("id")
+        if athlete_id is not None and str(athlete_id).strip():
+            return str(athlete_id).strip()
         links = athlete.get("links")
         if not isinstance(links, list):
             return None
@@ -152,47 +162,35 @@ def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[st
             m = None
             if "/id/" in href:
                 import re
-                m = re.search(r"/id/(\\d+)", href)
+                m = re.search(r"/id/(\d+)", href)
+                if not m:
+                    m = re.search(r"/id/(\d+)(?:/|$)", href)
             if m:
                 return str(m.group(1))
         return None
 
-    def _parse_status(inj: dict[str, Any]) -> str:
-        # Prefer raw status (often 'Out' / 'Day-To-Day'), but fall back to details.type/shortComment parsing.
-        status = inj.get("status")
-        if isinstance(status, str) and status.strip():
-            return _normalize_status_for_display(status)
-
+    def _parse_fantasy_abbr(inj: dict[str, Any]) -> str:
+        # Display label should match details.fantasyStatus.abbreviation when possible.
         details = inj.get("details")
         if isinstance(details, dict):
             fantasy = details.get("fantasyStatus")
             if isinstance(fantasy, dict):
-                dd = fantasy.get("displayDescription") or fantasy.get("description") or fantasy.get("abbreviation")
-                if isinstance(dd, str) and dd.strip():
-                    return _normalize_status_for_display(dd.strip())
+                abbr = fantasy.get("abbreviation")
+                if isinstance(abbr, str) and abbr.strip():
+                    return str(abbr).strip().upper()
+                desc = fantasy.get("description") or fantasy.get("displayDescription")
+                if isinstance(desc, str) and desc.strip():
+                    return _normalize_status_for_display(desc.strip()).upper()
             t = details.get("type")
             if isinstance(t, str) and t.strip():
-                return _normalize_status_for_display(t.strip())
+                return _normalize_status_for_display(t.strip()).upper()
 
-        for k in ("shortComment", "longComment"):
-            txt = str(inj.get(k) or "").lower()
-            if "probable" in txt:
-                return "Probable"
-            if "doubtful" in txt:
-                return "Doubtful"
-            if "questionable" in txt or "game-time decision" in txt or "game time decision" in txt:
-                return "Questionable"
-            if "day-to-day" in txt or "day to day" in txt:
-                return "GTD"
-            if "out" in txt:
-                return "Out"
+        # Fallback to the top-level status if fantasyStatus isn't present.
+        status = inj.get("status")
+        if isinstance(status, str) and status.strip():
+            return _normalize_status_for_display(status).upper()
 
-        t = inj.get("type")
-        if isinstance(t, dict):
-            desc = t.get("description") or t.get("name") or t.get("abbreviation")
-            if isinstance(desc, str) and desc.strip():
-                return _normalize_status_for_display(desc.strip())
-
+        # Safe default: treat unknowns as GTD.
         return "GTD"
 
     out: dict[str, dict[str, dict[str, str]]] = {}
@@ -208,6 +206,8 @@ def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[st
             continue
         by_id: dict[str, str] = {}
         by_name: dict[str, str] = {}
+        detail_by_id: dict[str, dict[str, str]] = {}
+        detail_by_name: dict[str, dict[str, str]] = {}
         for inj in team_inj:
             if not isinstance(inj, dict):
                 continue
@@ -215,14 +215,32 @@ def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[st
             if not isinstance(athlete, dict):
                 continue
             athlete_id = _athlete_id_from_links(athlete)
-            st = _parse_status(inj)
+            abbr = _parse_fantasy_abbr(inj)
+            short_comment = str(inj.get("shortComment") or "")
+            long_comment = str(inj.get("longComment") or "")
             if athlete_id:
-                by_id[str(athlete_id)] = st
+                by_id[str(athlete_id)] = abbr
+                detail_by_id[str(athlete_id)] = {
+                    "abbr": abbr,
+                    "shortComment": short_comment,
+                    "longComment": long_comment,
+                }
             name = athlete.get("displayName") or athlete.get("fullName") or athlete.get("shortName")
             if isinstance(name, str) and name.strip():
-                by_name[name.lower().strip()] = st
+                key = name.lower().strip()
+                by_name[key] = abbr
+                detail_by_name[key] = {
+                    "abbr": abbr,
+                    "shortComment": short_comment,
+                    "longComment": long_comment,
+                }
         if by_id or by_name:
-            out[team_key] = {"by_id": by_id, "by_name": by_name}
+            out[team_key] = {
+                "by_id": by_id,
+                "by_name": by_name,
+                "detail_by_id": detail_by_id,
+                "detail_by_name": detail_by_name,
+            }
     return out
 
 
@@ -655,18 +673,50 @@ def build_watchability_df(
             return a
         return a if _status_priority(a) >= _status_priority(b) else b
 
-    def _merged_team_status_map(team_key: str, game_id: str | None, *, players: list[PlayerImpact] | None = None) -> dict[str, str]:
+    def _weight_for_abbr_with_short_comment(*, abbr: str | None, short_comment: str | None, target_dow: str | None) -> float:
+        a = (abbr or "").strip().upper()
+        if not a:
+            return float(injury_weight("Available"))
+        if a in {"OUT", "OFS"}:
+            return float(injury_weight("Out"))
+        if a != "GTD":
+            return float(injury_weight("Available"))
+
+        inferred = "Questionable"
+        sc = (short_comment or "")
+        sc_l = sc.lower()
+        dow = (target_dow or "").strip().lower()
+        if dow and dow in sc_l:
+            if "probable" in sc_l:
+                inferred = "Probable"
+            elif "doubtful" in sc_l:
+                inferred = "Doubtful"
+            elif "questionable" in sc_l:
+                inferred = "Questionable"
+        return float(injury_weight(inferred))
+
+    def _merged_team_status_map(
+        team_key: str,
+        game_id: str | None,
+        *,
+        players: list[PlayerImpact] | None = None,
+    ) -> dict[str, str]:
         by_game = injury_reports.get(str(game_id or ""), {}).get(team_key, {}) or {}
         payload = (league_injuries_by_team or {}).get(team_key, {}) or {}
         by_league_id = payload.get("by_id") if isinstance(payload, dict) else {}
         by_league_name = payload.get("by_name") if isinstance(payload, dict) else {}
 
+        # Start from league fantasyStatus abbreviations (label source-of-truth).
         merged: dict[str, str] = dict(by_league_id) if isinstance(by_league_id, dict) else {}
+
+        # Only use per-game report as a fallback when the league feed doesn't contain the player.
         for pid, st in (by_game or {}).items():
             pid_s = str(pid)
-            w = _worst_status(merged.get(pid_s), str(st) if st is not None else None)
-            if w:
-                merged[pid_s] = w
+            if pid_s in merged:
+                continue
+            if st is None:
+                continue
+            merged[pid_s] = _normalize_status_for_display(str(st)).upper()
 
         # Name-based fallback: if athlete ids don't line up, use displayName matching.
         if players and isinstance(by_league_name, dict) and by_league_name:
@@ -677,12 +727,14 @@ def build_watchability_df(
                 name_key = str(p.name).lower().strip()
                 st = by_league_name.get(name_key)
                 if st:
-                    merged[pid] = st
+                    merged[pid] = str(st)
         return merged
 
-    def _team_key_injuries_and_health(team_key: str, game_id: str | None) -> tuple[float, str, str]:
+    def _team_key_injuries_and_health(team_key: str, game_id: str | None, *, target_dow: str | None) -> tuple[float, str, str]:
         players = team_impacts.get(team_key, []) or []
         by_team = _merged_team_status_map(team_key, game_id, players=players)
+        payload = (league_injuries_by_team or {}).get(team_key, {}) or {}
+        detail_by_id = payload.get("detail_by_id") if isinstance(payload, dict) else {}
 
         if not by_team:
             return 1.0, "", "[]"
@@ -697,8 +749,13 @@ def build_watchability_df(
 
         for pid, st in (by_team or {}).items():
             pid_str = str(pid)
-            st_norm = _normalize_status_for_display(str(st) if st is not None else None)
-            w = float(injury_weight(st_norm))
+            st_norm = _normalize_status_for_display(str(st) if st is not None else None).upper()
+            sc = None
+            if isinstance(detail_by_id, dict):
+                det = detail_by_id.get(pid_str)
+                if isinstance(det, dict):
+                    sc = det.get("shortComment")
+            w = _weight_for_abbr_with_short_comment(abbr=st_norm, short_comment=sc, target_dow=target_dow)
 
             p = impact_by_id.get(pid_str)
             if p is None:
@@ -764,38 +821,38 @@ def build_watchability_df(
         detail_json = json.dumps(detail, ensure_ascii=False)
         return health, ", ".join(key_injuries), detail_json
 
-    injury_info_cache: dict[tuple[str, str], tuple[float, str, str]] = {}
+    injury_info_cache: dict[tuple[str, str, str], tuple[float, str, str]] = {}
 
-    def _memo_team_injury_info(team_key: str, game_id: str | None) -> tuple[float, str, str]:
-        k = (team_key, str(game_id or ""))
+    def _memo_team_injury_info(team_key: str, game_id: str | None, target_dow: str | None) -> tuple[float, str, str]:
+        k = (team_key, str(game_id or ""), str(target_dow or ""))
         if k in injury_info_cache:
             return injury_info_cache[k]
-        v = _team_key_injuries_and_health(team_key, game_id)
+        v = _team_key_injuries_and_health(team_key, game_id, target_dow=target_dow)
         injury_info_cache[k] = v
         return v
 
     df["Health (away)"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[0],
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"), r.get("Day"))[0],
         axis=1,
     )
     df["Health (home)"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[0],
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"), r.get("Day"))[0],
         axis=1,
     )
     df["Away Key Injuries"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[1] or "",
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"), r.get("Day"))[1] or "",
         axis=1,
     )
     df["Home Key Injuries"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[1] or "",
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"), r.get("Day"))[1] or "",
         axis=1,
     )
     df["Away injuries detail JSON"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"))[2] or "[]",
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Away team"]), r.get("ESPN game id"), r.get("Day"))[2] or "[]",
         axis=1,
     )
     df["Home injuries detail JSON"] = df.apply(
-        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"))[2] or "[]",
+        lambda r: _memo_team_injury_info(_normalize_team_name(r["Home team"]), r.get("ESPN game id"), r.get("Day"))[2] or "[]",
         axis=1,
     )
 
@@ -807,15 +864,22 @@ def build_watchability_df(
     df["Adj win% (home) pre-star"] = df["Adj win% (home)"].astype(float)
     df["Avg adj win% pre-star"] = 0.5 * (df["Adj win% (away) pre-star"] + df["Adj win% (home) pre-star"])
 
-    def _star_factor(team_key: str, game_id: str | None) -> float:
+    def _star_factor(team_key: str, game_id: str | None, target_dow: str | None) -> float:
         top = top_scorer.get(team_key)
         if not top:
             return 0.0
         athlete_id, _, star_raw, _ = top
-        # Apply availability scaling using merged (league + matchup) injury info.
-        status = _merged_team_status_map(team_key, game_id, players=team_impacts.get(team_key, []) or []).get(str(athlete_id))
-        status_norm = _normalize_status_for_display(status) if status else "Available"
-        availability = max(0.0, 1.0 - float(injury_weight(status_norm)))
+        merged = _merged_team_status_map(team_key, game_id, players=team_impacts.get(team_key, []) or [])
+        abbr = merged.get(str(athlete_id))
+        payload = (league_injuries_by_team or {}).get(team_key, {}) or {}
+        detail_by_id = payload.get("detail_by_id") if isinstance(payload, dict) else {}
+        sc = None
+        if isinstance(detail_by_id, dict):
+            det = detail_by_id.get(str(athlete_id))
+            if isinstance(det, dict):
+                sc = det.get("shortComment")
+        w = _weight_for_abbr_with_short_comment(abbr=str(abbr) if abbr is not None else None, short_comment=sc, target_dow=target_dow)
+        availability = max(0.0, 1.0 - float(w))
         return float(STAR_WINPCT_BUMP) * float(star_raw) * availability
 
     def _star_player_name(team_key: str) -> str:
@@ -833,11 +897,11 @@ def build_watchability_df(
         return float(star_raw)
 
     df["Star factor (away)"] = df.apply(
-        lambda r: _star_factor(_normalize_team_name(r["Away team"]), r.get("ESPN game id")),
+        lambda r: _star_factor(_normalize_team_name(r["Away team"]), r.get("ESPN game id"), r.get("Day")),
         axis=1,
     )
     df["Star factor (home)"] = df.apply(
-        lambda r: _star_factor(_normalize_team_name(r["Home team"]), r.get("ESPN game id")),
+        lambda r: _star_factor(_normalize_team_name(r["Home team"]), r.get("ESPN game id"), r.get("Day")),
         axis=1,
     )
     df["Away Star Player"] = df.apply(lambda r: _star_player_name(_normalize_team_name(r["Away team"])), axis=1)
