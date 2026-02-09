@@ -750,6 +750,7 @@ def build_watchability_df(
         for pid, st in (by_team or {}).items():
             pid_str = str(pid)
             st_norm = _normalize_status_for_display(str(st) if st is not None else None).upper()
+            st_display = _normalize_status_for_display(st_norm)
             sc = None
             if isinstance(detail_by_id, dict):
                 det = detail_by_id.get(pid_str)
@@ -763,7 +764,7 @@ def build_watchability_df(
                     {
                         "player": "",
                         "player_id": pid_str,
-                        "status": st_norm,
+                        "status": st_display,
                         "injury_weight": w,
                         "impact_share": None,
                         "raw_impact": None,
@@ -779,12 +780,12 @@ def build_watchability_df(
             penalty += w * share
 
             health_delta = float(INJURY_OVERALL_IMPORTANCE_WEIGHT) * w * share
-            injured_players.append((raw, share, pid_str, name, st_norm))
+            injured_players.append((raw, share, pid_str, name, st_display))
             detail.append(
                 {
                     "player": name,
                     "player_id": pid_str,
-                    "status": st_norm,
+                    "status": st_display,
                     "injury_weight": w,
                     "impact_share": share,
                     "raw_impact": raw,
@@ -798,11 +799,11 @@ def build_watchability_df(
 
         injured_players.sort(key=lambda x: x[0], reverse=True)
         key_injuries: list[str] = []
-        for raw, share, pid_str, name, st_norm in injured_players:
+        for raw, share, pid_str, name, st_display in injured_players:
             is_key = float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD
-            is_top_out = bool(top_athlete_id) and pid_str == top_athlete_id and _status_priority(st_norm) >= 3
+            is_top_out = bool(top_athlete_id) and pid_str == top_athlete_id and _status_priority(st_display) >= 3
             if is_key or is_top_out:
-                key_injuries.append(f"{name}: {st_norm}")
+                key_injuries.append(f"{name}: {st_display}")
 
         total_delta = sum(float(d["health_delta"]) for d in detail if d.get("health_delta") is not None)
         if total_delta > 0:
