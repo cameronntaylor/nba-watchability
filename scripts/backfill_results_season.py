@@ -70,10 +70,22 @@ def _daterange(start: dt.date, end_inclusive: dt.date):
         d += dt.timedelta(days=1)
 
 
-def _fetch_scoreboard_with_retry(date: dt.date, *, ttl_seconds: int, max_attempts: int = 5) -> list[dict]:
+def _fetch_scoreboard_with_retry(
+    date: dt.date,
+    *,
+    ttl_seconds: int,
+    cache_key_prefix: str,
+    meta: dict[str, Any] | None = None,
+    max_attempts: int = 5,
+) -> list[dict]:
     for attempt in range(1, max_attempts + 1):
         try:
-            return fetch_games_for_date(date, ttl_seconds=ttl_seconds)
+            return fetch_games_for_date(
+                date,
+                ttl_seconds=ttl_seconds,
+                cache_key_prefix=cache_key_prefix,
+                meta=meta,
+            )
         except requests.exceptions.HTTPError as e:
             code = getattr(getattr(e, "response", None), "status_code", None)
             if code in {429, 500, 502, 503, 504} and attempt < max_attempts:
@@ -128,6 +140,11 @@ def main() -> int:
     p.add_argument("--jitter", type=float, default=1.0, help="Random jitter (+/- seconds) added to --sleep.")
     p.add_argument("--skip-existing", action="store_true", help="Skip a day if an output file already exists.")
     p.add_argument("--verbose", action="store_true", help="Print per-day ESPN state counts for debugging.")
+    p.add_argument(
+        "--refresh-scoreboard",
+        action="store_true",
+        help="Force-refresh ESPN scoreboard cache (ignores cached pre/in results).",
+    )
     p.add_argument("--out-dir", type=str, default=os.path.join("output", "logs", "results_backfill"))
     p.add_argument("--data-version", type=str, default=os.getenv("WATCHABILITY_DATA_VERSION", "v2"))
     args = p.parse_args()
@@ -156,10 +173,26 @@ def main() -> int:
             print(f"Skipping {target_date.isoformat()} (exists).")
             continue
 
+        today_pt = dt.datetime.now(pt_tz).date()
+
+        def _load_scoreboard_days(*, ttl_seconds: int) -> tuple[list[dict], list[dict[str, Any]]]:
+            games: list[dict] = []
+            metas: list[dict[str, Any]] = []
+            for d in (target_date, target_date + dt.timedelta(days=1)):
+                meta: dict[str, Any] = {"scoreboard_date": d.isoformat(), "ttl_seconds": int(ttl_seconds)}
+                games.extend(
+                    _fetch_scoreboard_with_retry(
+                        d,
+                        ttl_seconds=ttl_seconds,
+                        cache_key_prefix="scoreboard_final",
+                        meta=meta,
+                    )
+                )
+                metas.append(meta)
+            return games, metas
+
         # Fetch two adjacent scoreboard days and re-bucket games by PT tip date.
-        games = []
-        for d in (target_date, target_date + dt.timedelta(days=1)):
-            games.extend(fetch_games_for_date(d, ttl_seconds=scoreboard_ttl, cache_key_prefix="scoreboard_final"))
+        games, metas = _load_scoreboard_days(ttl_seconds=0 if args.refresh_scoreboard else scoreboard_ttl)
 
         if args.verbose and games:
             counts = {}
@@ -178,8 +211,33 @@ def main() -> int:
             post_games.append(g)
 
         if not post_games:
-            print(f"{target_date.isoformat()}: no completed games found.")
-            continue
+            # Common gotcha: a "pre"/"in" cached scoreboard response gets reused for too long (this script uses long TTL).
+            # If the date should be fully complete, force-refresh and try again.
+            any_from_cache = any(bool(m.get("from_cache")) for m in metas)
+            should_be_final = target_date < today_pt
+            if should_be_final and any_from_cache and not args.refresh_scoreboard:
+                if args.verbose:
+                    print(f"{target_date.isoformat()}: refreshing cached scoreboard (no post games found).")
+                games, metas = _load_scoreboard_days(ttl_seconds=0)
+                post_games = []
+                for g in games:
+                    pt_date = _pt_game_date(g.get("start_time_utc"), pt_tz)
+                    if pt_date != target_date:
+                        continue
+                    if str(g.get("state")) != "post":
+                        continue
+                    post_games.append(g)
+
+            if not post_games:
+                if args.verbose and games:
+                    counts = {}
+                    for g in games:
+                        st = str(g.get("state") or "")
+                        counts[st] = counts.get(st, 0) + 1
+                    cache_flags = {m.get("scoreboard_date"): bool(m.get("from_cache")) for m in metas}
+                    print(f"{target_date.isoformat()}: scoreboard states {counts} (from_cache={cache_flags})")
+                print(f"{target_date.isoformat()}: no completed games found.")
+                continue
 
         now_utc = _utc_now()
         time_log_utc = now_utc.isoformat().replace("+00:00", "Z")

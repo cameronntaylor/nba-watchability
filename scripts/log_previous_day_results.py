@@ -73,9 +73,12 @@ def main() -> int:
     # Fetch two adjacent scoreboard days and re-bucket games by PT tip date.
     scoreboard_days = [target_date, target_date + dt.timedelta(days=1)]
     games = []
+    metas = []
     for d in scoreboard_days:
         try:
-            games.extend(fetch_games_for_date(d, ttl_seconds=60 * 15, cache_key_prefix="scoreboard_final"))
+            meta = {"scoreboard_date": d.isoformat()}
+            games.extend(fetch_games_for_date(d, ttl_seconds=60 * 15, cache_key_prefix="scoreboard_final", meta=meta))
+            metas.append(meta)
         except Exception as e:
             print(f"Failed to fetch ESPN scoreboard for {d.isoformat()}: {e}")
             return 0
@@ -90,8 +93,29 @@ def main() -> int:
         post_games.append(g)
 
     if not post_games:
-        print(f"No completed games found for PT date {target_date.isoformat()}.")
-        return 0
+        # If we somehow cached a pre/in-progress scoreboard response, force-refresh once.
+        today_pt = dt.datetime.now(pt_tz).date()
+        any_from_cache = any(bool(m.get("from_cache")) for m in metas)
+        if target_date < today_pt and any_from_cache:
+            games = []
+            for d in scoreboard_days:
+                try:
+                    games.extend(fetch_games_for_date(d, ttl_seconds=0, cache_key_prefix="scoreboard_final"))
+                except Exception as e:
+                    print(f"Failed to refresh ESPN scoreboard for {d.isoformat()}: {e}")
+                    return 0
+            post_games = []
+            for g in games:
+                pt_date = _pt_game_date(g.get("start_time_utc"), pt_tz)
+                if pt_date != target_date:
+                    continue
+                if str(g.get("state")) != "post":
+                    continue
+                post_games.append(g)
+
+        if not post_games:
+            print(f"No completed games found for PT date {target_date.isoformat()}.")
+            return 0
 
     now_utc = _utc_now()
     time_log_utc = now_utc.isoformat().replace("+00:00", "Z")

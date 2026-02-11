@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from core.http_cache import get_json_cached
 from dateutil import parser as dtparser
 
@@ -32,18 +34,22 @@ def fetch_games_for_date(
     *,
     ttl_seconds: int = 60,
     cache_key_prefix: str = "scoreboard",
+    meta: dict[str, Any] | None = None,
 ):
     ymd = date.strftime("%Y%m%d")
     url = f"{ESPN_SCOREBOARD}?dates={ymd}"
 
+    cache_key = f"{cache_key_prefix}:{ymd}"
     resp = get_json_cached(
         url,
         namespace="espn",
-        cache_key=f"{cache_key_prefix}:{ymd}",
+        cache_key=cache_key,
         ttl_seconds=int(ttl_seconds),
         timeout_seconds=10,
     )
     data = resp.data
+    if meta is not None:
+        meta.update({"from_cache": bool(resp.from_cache), "cache_key": cache_key, "url": url})
 
     games = []
     for event in data.get("events", []):
