@@ -735,8 +735,9 @@ def _render_menu_row(r) -> str:
     where_url = str(r.get("Where to watch URL", "") or "").strip()
     where_html = ""
     if where_url:
+        provider = str(r.get("Where to watch provider", "") or "").strip() or "League Pass"
         where_html = (
-            f"<div><a href='{py_html.escape(where_url)}' target='_blank' rel='noopener noreferrer'>Where to watch</a></div>"
+            f"<div><a href='{py_html.escape(where_url)}' target='_blank' rel='noopener noreferrer'>Where to watch: {py_html.escape(provider)}</a></div>"
         )
     spread = r["Home spread"]
     home_abbr = get_team_abbr(str(r.get("Home team", ""))) or str(r.get("Home team", ""))[:3].upper()

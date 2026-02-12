@@ -244,20 +244,28 @@ def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[st
     return out
 
 
-def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str, dict[str, str]]]:
+def _load_espn_game_summary_maps(
+    game_ids: list[str],
+) -> tuple[dict[str, dict[str, dict[str, str]]], dict[str, str]]:
     """
-    Returns: game_id -> team_key -> athlete_id -> status.
+    Returns:
+      - injury_reports: game_id -> team_key -> athlete_id -> status
+      - watch_providers: game_id -> simplified provider label (ESPN/Peacock/Prime/League Pass)
+
+    Uses ESPN's game summary endpoint (cached on disk):
+      https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=<GAME_ID>
     """
-    out: dict[str, dict[str, dict[str, str]]] = {}
+    injury_reports: dict[str, dict[str, dict[str, str]]] = {}
+    watch_providers: dict[str, str] = {}
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 
     ids = [str(g).strip() for g in game_ids if str(g).strip()]
     if not ids:
-        return out
+        return injury_reports, watch_providers
 
     max_workers = int(os.getenv("NBA_WATCH_SUMMARY_WORKERS", "8"))
 
-    def _fetch_one(gid_s: str) -> tuple[str, dict[str, dict[str, str]] | None]:
+    def _fetch_one(gid_s: str) -> tuple[str, dict[str, dict[str, str]] | None, str]:
         try:
             resp = get_json_cached(
                 url,
@@ -269,11 +277,16 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
             )
             data = resp.data
         except Exception:
-            return gid_s, None
+            return gid_s, None, "League Pass"
 
-        injuries = data.get("injuries") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return gid_s, {}, "League Pass"
+
+        provider = _map_watch_provider_label(_extract_espn_broadcast_media_names(data))
+
+        injuries = data.get("injuries")
         if not isinstance(injuries, list):
-            return gid_s, {}
+            return gid_s, {}, provider
 
         by_team: dict[str, dict[str, str]] = {}
         for block in injuries:
@@ -318,17 +331,78 @@ def _load_espn_game_injury_report_map(game_ids: list[str]) -> dict[str, dict[str
                 m[athlete_id] = chosen
             by_team[team_key] = m
 
-        return gid_s, by_team
+        return gid_s, by_team, provider
 
     # Parallelize per-game summary fetches; this is the biggest cold-load hotspot.
     with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [ex.submit(_fetch_one, gid) for gid in ids]
         for fut in cf.as_completed(futures):
-            gid_s, by_team = fut.result()
+            gid_s, by_team, provider = fut.result()
+            watch_providers[gid_s] = provider
             if by_team is None:
                 continue
-            out[gid_s] = by_team
+            injury_reports[gid_s] = by_team
 
+    return injury_reports, watch_providers
+
+
+def _map_watch_provider_label(names: list[str]) -> str:
+    """
+    Map ESPN broadcast/media names into a simplified label set for UI display.
+
+    User-facing categories:
+      - ESPN
+      - Peacock
+      - Prime
+      - League Pass (fallback for everything else / unknown)
+    """
+    combined = " ".join([str(x) for x in names if str(x).strip()]).lower()
+    if not combined:
+        return "League Pass"
+    if "peacock" in combined:
+        return "Peacock"
+    if "prime" in combined or "amazon" in combined:
+        return "Prime"
+    # ESPN family (including ABC/ESPN2/ESPN+ labels) collapses into "ESPN".
+    if "espn" in combined or combined.strip() == "abc" or " abc" in combined:
+        return "ESPN"
+    return "League Pass"
+
+
+def _extract_espn_broadcast_media_names(summary: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+
+    def _pull(bcasts: Any) -> None:
+        if not isinstance(bcasts, list):
+            return
+        for b in bcasts:
+            if not isinstance(b, dict):
+                continue
+            media = b.get("media")
+            if isinstance(media, dict):
+                sn = media.get("shortName") or media.get("name")
+                if isinstance(sn, str) and sn.strip():
+                    names.append(sn.strip())
+            # Some summaries encode broadcast name at the top-level.
+            sn2 = b.get("shortName") or b.get("name")
+            if isinstance(sn2, str) and sn2.strip():
+                names.append(sn2.strip())
+
+    _pull(summary.get("broadcasts"))
+    header = summary.get("header")
+    if isinstance(header, dict):
+        comps = header.get("competitions")
+        if isinstance(comps, list) and comps and isinstance(comps[0], dict):
+            _pull(comps[0].get("broadcasts"))
+
+    # De-dup while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
     return out
 
 
@@ -553,7 +627,8 @@ def build_watchability_df(
 
     def _tip_display(r) -> str:
         if not bool(r["Is live"]):
-            return str(r["Tip short"])
+            tip = str(r["Tip short"])
+            return tip if "PT" in tip else f"{tip} PT"
         away = r.get("Away score")
         home = r.get("Home score")
         tr = r.get("Time remaining")
@@ -567,7 +642,7 @@ def build_watchability_df(
         df = df[df["Status"] != "post"].copy()
 
     game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
-    injury_reports = _load_espn_game_injury_report_map(game_ids) if game_ids else {}
+    injury_reports, watch_providers = _load_espn_game_summary_maps(game_ids) if game_ids else ({}, {})
     league_injuries_by_team = _load_espn_league_injuries_by_team(ttl_seconds=5 * 60)
 
     # NBA.com game URLs (match by PT date + teams; teams play at most once per date).
@@ -602,6 +677,9 @@ def build_watchability_df(
         return f"https://www.nba.com/game/{away_abbr}-vs-{home_abbr}-{gid}"
 
     df["Where to watch URL"] = df.apply(_nba_game_url_row, axis=1)
+    df["Where to watch provider"] = df["ESPN game id"].apply(
+        lambda gid: watch_providers.get(str(gid), "League Pass") if gid is not None else "League Pass"
+    )
 
     teams_with_injuries: set[str] = set()
     for _, by_team in injury_reports.items():
