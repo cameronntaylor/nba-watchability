@@ -71,9 +71,14 @@ def get_json_cached(
         if now - ts <= float(ttl_seconds):
             return CachedResponse(url=url, data=cached.get("data"), from_cache=True)
 
-    r = requests.get(url, params=params, headers=headers, timeout=timeout_seconds)
-    r.raise_for_status()
-    data = r.json()
-    _write_json(path, {"_ts": now, "data": data})
-    return CachedResponse(url=url, data=data, from_cache=False)
-
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=timeout_seconds)
+        r.raise_for_status()
+        data = r.json()
+        _write_json(path, {"_ts": now, "data": data})
+        return CachedResponse(url=url, data=data, from_cache=False)
+    except Exception:
+        # If we have *any* cached data (even if stale), prefer returning it over failing hard.
+        if cached and "data" in cached:
+            return CachedResponse(url=url, data=cached.get("data"), from_cache=True)
+        raise

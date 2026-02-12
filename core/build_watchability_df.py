@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from typing import Any
 
 import concurrent.futures as cf
@@ -51,6 +52,20 @@ def _normalize_status_for_display(status: str | None) -> str:
     if s.lower() in {"day-to-day", "day to day", "daytoday", "dtd"}:
         return "GTD"
     return s
+
+
+def _normalize_player_name(name: str) -> str:
+    """
+    Normalize player names to improve cross-endpoint matching.
+    """
+    n = (name or "").strip().lower()
+    if not n:
+        return ""
+    # Remove punctuation, keep spaces.
+    n = re.sub(r"[^a-z0-9\\s]", " ", n)
+    # Collapse suffixes.
+    parts = [p for p in n.split() if p not in {"jr", "sr", "ii", "iii", "iv", "v"}]
+    return " ".join(parts)
 
 
 def _load_espn_game_map(local_dates_iso: list[str]) -> dict[tuple[str, str, str], dict]:
@@ -218,19 +233,22 @@ def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[st
             abbr = _parse_fantasy_abbr(inj)
             short_comment = str(inj.get("shortComment") or "")
             long_comment = str(inj.get("longComment") or "")
+            athlete_name = athlete.get("displayName") or athlete.get("fullName") or athlete.get("shortName") or ""
             if athlete_id:
                 by_id[str(athlete_id)] = abbr
                 detail_by_id[str(athlete_id)] = {
                     "abbr": abbr,
+                    "name": str(athlete_name),
                     "shortComment": short_comment,
                     "longComment": long_comment,
                 }
-            name = athlete.get("displayName") or athlete.get("fullName") or athlete.get("shortName")
+            name = athlete_name
             if isinstance(name, str) and name.strip():
                 key = name.lower().strip()
                 by_name[key] = abbr
                 detail_by_name[key] = {
                     "abbr": abbr,
+                    "name": str(name),
                     "shortComment": short_comment,
                     "longComment": long_comment,
                 }
@@ -712,9 +730,8 @@ def build_watchability_df(
         ]
         for fut in cf.as_completed(futures):
             k, players = fut.result()
-            # Keep the full list only if we might need it for injury penalty breakdown.
-            if k in teams_with_injuries:
-                team_impacts[k] = players
+            # Keep the full list for robust injury matching and logging.
+            team_impacts[k] = players
             if players:
                 def _star_sum(pl: PlayerImpact) -> float:
                     return (
@@ -818,6 +835,7 @@ def build_watchability_df(
             return 1.0, "", "[]"
 
         impact_by_id: dict[str, PlayerImpact] = {str(p.athlete_id): p for p in players}
+        impact_by_norm_name: dict[str, PlayerImpact] = {_normalize_player_name(p.name): p for p in players if _normalize_player_name(p.name)}
         top = top_scorer.get(team_key)
         top_athlete_id = str(top[0]) if top else ""
 
@@ -830,17 +848,21 @@ def build_watchability_df(
             st_norm = _normalize_status_for_display(str(st) if st is not None else None).upper()
             st_display = _normalize_status_for_display(st_norm)
             sc = None
+            inj_name = ""
             if isinstance(detail_by_id, dict):
                 det = detail_by_id.get(pid_str)
                 if isinstance(det, dict):
                     sc = det.get("shortComment")
+                    inj_name = str(det.get("name") or "")
             w = _weight_for_abbr_with_short_comment(abbr=st_norm, short_comment=sc, target_dow=target_dow)
 
             p = impact_by_id.get(pid_str)
+            if p is None and inj_name:
+                p = impact_by_norm_name.get(_normalize_player_name(inj_name))
             if p is None:
                 detail.append(
                     {
-                        "player": "",
+                        "player": inj_name,
                         "player_id": pid_str,
                         "status": st_display,
                         "injury_weight": w,
@@ -1066,7 +1088,7 @@ def build_watchability_sources_summary(df: pd.DataFrame) -> str:
     spread_sources = sorted({str(x) for x in df.get("Spread source", pd.Series(dtype=str)).dropna().tolist()})
     payload = {
         "odds_sources": spread_sources,
-        "injuries_source": "ESPN summary (event)",
+        "injuries_source": "ESPN league injuries + summary fallback",
         "generated_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     return json.dumps(payload, sort_keys=True)

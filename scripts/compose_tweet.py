@@ -109,39 +109,45 @@ def _bucket_summary_fallback() -> tuple[str | None, str | None]:
     return tweet_date, summary
 
 def compose_tweet_text():
-    # Prefer counts from the locally-logged watchability dataframe (same computation as artifacts).
-    tweet_date, counts = _try_load_counts_from_latest_log()
-    if counts:
-        summary = _bucket_summary_from_counts(counts)
-        print(f"[tweet] using latest log -> {summary}")
-        parts = [f"🏀 NBA Watchability — {tweet_date or date.today().strftime('%b %d').replace(' 0', ' ')}", ""]
-        parts.append("")
-        parts.append(summary)
-        parts.append("")
-        parts.append("Full slate + details: https://nba-watchability.streamlit.app/")
-        return "\n".join(parts)
-
+    # Prefer counts embedded in the deployed dashboard metadata captured alongside the screenshot.
     tweet_date, counts, meta = _try_load_counts_from_dashboard_meta()
     summary = None
-
+    n_games = None
     if counts:
         summary = _bucket_summary_from_counts(counts)
-        if meta:
-            slate_day = meta.get("slate_day")
-            print(f"[tweet] using dashboard meta (slate_day={slate_day}) -> {summary}")
-    else:
+        slate_day = meta.get("slate_day") if isinstance(meta, dict) else None
         try:
-            tweet_date, summary = _bucket_summary_fallback()
-            if summary:
+            n_games = int(meta.get("n_games")) if isinstance(meta, dict) and meta.get("n_games") is not None else None
+        except Exception:
+            n_games = None
+        print(f"[tweet] using dashboard meta (slate_day={slate_day}) -> {summary}")
+    else:
+        tweet_date, counts = _try_load_counts_from_latest_log()
+        if counts:
+            summary = _bucket_summary_from_counts(counts)
+            try:
+                n_games = sum(int(v) for v in counts.values())
+            except Exception:
+                n_games = None
+            print(f"[tweet] using latest log -> {summary}")
+    if not summary:
+        try:
+            tweet_date2, summary2 = _bucket_summary_fallback()
+            if summary2:
+                tweet_date = tweet_date or tweet_date2
+                summary = summary2
                 print(f"[tweet] using fallback computation -> {summary}")
         except Exception:
-            summary = None
+            pass
 
     if not tweet_date:
         # Last resort: PT calendar date.
         tweet_date = date.today().strftime("%b %d").replace(" 0", " ")
 
-    parts = [f"🏀 NBA Watchability — {tweet_date}", ""]
+    header = f"🏀 NBA Watchability — {tweet_date}"
+    if isinstance(n_games, int) and n_games >= 0:
+        header = f"{header} — {n_games} games"
+    parts = [header, ""]
     if summary:
         parts.append("")
         parts.append(summary)

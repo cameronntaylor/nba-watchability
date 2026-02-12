@@ -1,0 +1,58 @@
+name: Log ESPN Injury Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Run regardless of current PT time"
+        required: false
+        default: "false"
+
+  schedule:
+    # GitHub cron is UTC; schedule both PDT and PST variants and gate in-script by PT hour.
+    # 10am PT -> 17 UTC (PDT) and 18 UTC (PST)
+    - cron: "0 17 * * *"
+    - cron: "0 18 * * *"
+    # 4pm PT -> 23 UTC (PDT) and 0 UTC (PST)
+    - cron: "0 23 * * *"
+    - cron: "0 0 * * *"
+    # 7pm PT -> 2 UTC (PDT) and 3 UTC (PST)
+    - cron: "0 2 * * *"
+    - cron: "0 3 * * *"
+
+jobs:
+  log-injuries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Log ESPN injury report
+        env:
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ "${FORCE}" = "true" ]; then
+            python scripts/log_espn_injury_report.py --force
+          else
+            python scripts/log_espn_injury_report.py
+          fi
+
+      - name: Upload injury report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: espn-injury-report
+          path: |
+            output/logs/injury_reports/*.json
+            output/logs/injury_reports/*.csv
+
