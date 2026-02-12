@@ -1066,7 +1066,7 @@ def build_watchability_sources_summary(df: pd.DataFrame) -> str:
     spread_sources = sorted({str(x) for x in df.get("Spread source", pd.Series(dtype=str)).dropna().tolist()})
     payload = {
         "odds_sources": spread_sources,
-        "injuries_source": "ESPN summary (event)",
+        "injuries_source": "ESPN league injuries + summary fallback",
         "generated_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     return json.dumps(payload, sort_keys=True)
