@@ -366,7 +366,7 @@ def _fmt_m_d(d: dt.date) -> str:
 def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict[str, str]]:
     df = load_watchability_df(days_ahead=2)
     if df.empty:
-        st.warning("No games returned from Odds API. (Off day? API issue? Check your key/limits.)")
+        st.warning("No NBA regular season or playoff games found. Enjoy the break!")
         st.stop()
 
     df_dates = (

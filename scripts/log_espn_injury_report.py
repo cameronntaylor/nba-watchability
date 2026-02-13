@@ -31,10 +31,6 @@ def _pt_now(tz_name: str) -> dt.datetime:
     return _utc_now().astimezone(tz.gettz(tz_name))
 
 
-def _should_run_now_pt(now_pt: dt.datetime, hours: set[int]) -> bool:
-    return now_pt.minute == 0 and now_pt.hour in hours
-
-
 def _get_json_with_retry(url: str, *, retries: int = 3, timeout_seconds: int = 30) -> dict[str, Any]:
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
@@ -89,16 +85,11 @@ def _fantasy_abbr(inj: dict[str, Any]) -> str:
 def main() -> int:
     p = argparse.ArgumentParser(description="Snapshot ESPN's full NBA league injury report.")
     p.add_argument("--tz", type=str, default="America/Los_Angeles")
-    p.add_argument("--hours-pt", type=str, default="10,16,19", help="Comma-separated PT hours to run at.")
-    p.add_argument("--force", action="store_true", help="Run regardless of current PT time.")
     p.add_argument("--out-dir", type=str, default=os.path.join(PROJECT_ROOT, "output", "logs", "injury_reports"))
     args = p.parse_args()
 
-    hours = {int(x) for x in str(args.hours_pt).split(",") if str(x).strip()}
     now_pt = _pt_now(str(args.tz))
-    if not args.force and not _should_run_now_pt(now_pt, hours):
-        print(f"Skipping: now PT is {now_pt.strftime('%Y-%m-%d %H:%M')} (hours={sorted(hours)}).")
-        return 0
+    print(f"Running injury snapshot at PT={now_pt.strftime('%Y-%m-%d %H:%M')} (UTC={_utc_now().strftime('%Y-%m-%d %H:%MZ')}).")
 
     data = _get_json_with_retry(ESPN_LEAGUE_INJURIES_URL, retries=3, timeout_seconds=30)
 
@@ -174,4 +165,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
