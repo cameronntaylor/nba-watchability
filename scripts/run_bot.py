@@ -9,6 +9,10 @@ def main():
     image_paths = capture_dashboard()
     tweet_text = compose_tweet_text()
 
+    if not tweet_text or not str(tweet_text).strip():
+        print("No games found / no tweet text generated; skipping tweet.")
+        return
+
     post_tweet(
         text=tweet_text,
         image_paths=image_paths,
