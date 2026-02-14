@@ -366,8 +366,7 @@ def _fmt_m_d(d: dt.date) -> str:
 def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict[str, str]]:
     df = load_watchability_df(days_ahead=2)
     if df.empty:
-        st.warning("No NBA regular season or playoff games found. Enjoy the break!")
-        st.stop()
+        return df, pd.DataFrame(columns=["Local date", "Day"]), [], {}
 
     df_dates = (
         df.dropna(subset=["Local date"])
@@ -931,6 +930,24 @@ def render_full_dashboard(title: str, caption: str) -> None:
     st.markdown("<div class='caption-spacer'></div>", unsafe_allow_html=True)
 
     df, df_dates, date_options, date_to_label = build_dashboard_frames()
+    if df.empty:
+        st.warning("No NBA regular season or playoff games found. Enjoy the break!")
+        try:
+            meta = {
+                "slate_day": None,
+                "tweet_date": dt.date.today().strftime("%b %d").replace(" 0", " "),
+                "n_games": 0,
+                "counts": {},
+                "matchups": {},
+            }
+            meta_attr = py_html.escape(json.dumps(meta, ensure_ascii=False))
+            st.markdown(
+                f"<div id='tweet-meta' data-meta='{meta_attr}' style='display:none;'></div>",
+                unsafe_allow_html=True,
+            )
+        except Exception:
+            pass
+        return
 
     default_day = None
     try:
@@ -990,6 +1007,7 @@ def render_full_dashboard(title: str, caption: str) -> None:
         meta = {
             "slate_day": slate,
             "tweet_date": tweet_date,
+            "n_games": int(len(df_slate)) if df_slate is not None else 0,
             "counts": counts,
             "matchups": matchups,
         }
@@ -1002,6 +1020,9 @@ def render_full_dashboard(title: str, caption: str) -> None:
 def render_chart_page() -> None:
     inject_base_css()
     df, _, date_options, date_to_label = build_dashboard_frames()
+    if df.empty:
+        st.warning("No NBA regular season or playoff games found. Enjoy the break!")
+        return
     selected = st.query_params.get("day")
     render_chart(
         df=df,
@@ -1016,4 +1037,7 @@ def render_chart_page() -> None:
 def render_table_page() -> None:
     inject_base_css()
     df, df_dates, date_options, _ = build_dashboard_frames()
+    if df.empty:
+        st.warning("No NBA regular season or playoff games found. Enjoy the break!")
+        return
     render_table(df=df, df_dates=df_dates, date_options=date_options)

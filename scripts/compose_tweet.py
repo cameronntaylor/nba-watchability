@@ -144,7 +144,8 @@ def compose_tweet_text():
         # Last resort: PT calendar date.
         tweet_date = date.today().strftime("%b %d").replace(" 0", " ")
 
-    if isinstance(n_games, int) and n_games == 0:
+    # If we can't confidently identify a slate with games, skip tweeting.
+    if (isinstance(n_games, int) and n_games == 0) or (n_games is None and summary is None):
         return None
 
     header = f"🏀 NBA Watchability — {tweet_date}"
