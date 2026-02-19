@@ -153,6 +153,14 @@ div[data-testid="collapsedControl"] {display: none;}
   .menu-meta {width: 100%; padding-left: 92px; font-size: 14px; line-height: 1.35;}
   .menu-matchup .record {font-size: 11px;}
 }
+
+/* On mobile, show Recommendations above the All Games menu. */
+.recs-mobile {display: none;}
+.recs-desktop {display: block;}
+@media (max-width: 640px) {
+  .recs-mobile {display: block;}
+  .recs-desktop {display: none;}
+}
 </style>
 """,
         unsafe_allow_html=True,
@@ -305,7 +313,7 @@ def _pick_slate_df(df: pd.DataFrame, slate_day: str | None) -> pd.DataFrame:
     return df.copy()
 
 
-def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None) -> None:
+def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wrapper_class: str = "") -> None:
     """
     Recommendations:
       - What to watch now (W2WN)
@@ -430,19 +438,44 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None) ->
     cards: list[str] = []
 
     # 1) What to watch now
-    best_now = d.sort_values(["_w2wn_score", "aWI"], ascending=False).iloc[0]
-    is_live = bool(best_now.get("_is_live", False)) or str(best_now.get("_status") or "").lower() == "in"
-    mins_to_tip = best_now.get("_minutes_to_tip")
-    if is_live:
-        subtitle = "Watch LIVE:"
-    else:
-        if mins_to_tip is None:
-            subtitle = "Watch next:"
-        elif float(mins_to_tip) <= 0:
-            subtitle = "Watch now:"
+    show_w2wn = False
+    try:
+        slate_date: dt.date | None = None
+        if slate_day and len(str(slate_day)) == 10:
+            y, m, dd = (int(x) for x in str(slate_day).split("-"))
+            slate_date = dt.date(y, m, dd)
+        elif "Local date" in d.columns and not d["Local date"].dropna().empty:
+            v = d["Local date"].dropna().iloc[0]
+            if isinstance(v, dt.date):
+                slate_date = v
+
+        is_same_day = bool(slate_date) and slate_date == now_pt.date()
+        if is_same_day:
+            # Only show within 3 hours of the first tip (or during live games).
+            any_live = bool(
+                (d.get("_is_live", False) == True).any()  # noqa: E712
+                or (d.get("_status", "").astype(str).str.lower() == "in").any()
+            )
+            mins = [float(x) for x in d.get("_minutes_to_tip", []).tolist() if x is not None]
+            min_to_tip = min(mins) if mins else None
+            show_w2wn = any_live or (min_to_tip is not None and float(min_to_tip) <= 180.0)
+    except Exception:
+        show_w2wn = False
+
+    if show_w2wn:
+        best_now = d.sort_values(["_w2wn_score", "aWI"], ascending=False).iloc[0]
+        is_live = bool(best_now.get("_is_live", False)) or str(best_now.get("_status") or "").lower() == "in"
+        mins_to_tip = best_now.get("_minutes_to_tip")
+        if is_live:
+            subtitle = "Watch LIVE:"
         else:
-            subtitle = f"Wait {_fmt_wait_time(float(mins_to_tip))} for"
-    cards.append(_rec_card(title="What to watch now", title_class="now", subtitle=subtitle, row=best_now))
+            if mins_to_tip is None:
+                subtitle = "Watch next:"
+            elif float(mins_to_tip) <= 0:
+                subtitle = "Watch now:"
+            else:
+                subtitle = f"Wait {_fmt_wait_time(float(mins_to_tip))} for"
+        cards.append(_rec_card(title="What to watch now", title_class="now", subtitle=subtitle, row=best_now))
 
     # 2) Best upcoming game tonight
     upcoming = d[
@@ -509,9 +542,11 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None) ->
         ).strip()
         cards.append(html)
 
-    st.markdown("<div class='rec-wrap'><div class='rec-head'>Recommendations</div></div>", unsafe_allow_html=True)
-    for card in cards:
-        st.markdown(card, unsafe_allow_html=True)
+    header_html = "<div class='rec-wrap'><div class='rec-head'>Recommendations</div></div>"
+    inner = "\n".join([header_html] + cards)
+    if wrapper_class:
+        inner = f"<div class='{py_html.escape(wrapper_class)}'>{inner}</div>"
+    st.markdown(inner, unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=60 * 10)  # 10 min (live scores)
@@ -1108,7 +1143,13 @@ def _render_menu_row(r) -> str:
 </div>"""
 
 
-def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[str]) -> None:
+def render_table(
+    df: pd.DataFrame,
+    df_dates: pd.DataFrame,
+    date_options: list[str],
+    *,
+    selected_day: str | None = None,
+) -> None:
     sort_mode = st.segmented_control("Sort", options=["Watchability", "Tip time"], default="Watchability")
     sort_mode = sort_mode or "Watchability"
     today_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles")).date()
@@ -1146,6 +1187,36 @@ def render_table(df: pd.DataFrame, df_dates: pd.DataFrame, date_options: list[st
                 break
         top_set = set(top_keys)
         return top_set, top_set
+
+    if selected_day and selected_day in (date_options or []) and "Local date" in df.columns:
+        day_df = df[df["Local date"].astype(str) == str(selected_day)].copy()
+        if day_df.empty:
+            return
+        if "Tip dt (PT)" in day_df.columns:
+            day_df["_is_today_pt"] = day_df["Tip dt (PT)"].apply(_is_today_pt_tip)
+            eligible = day_df[day_df["_is_today_pt"]].copy()
+        else:
+            day_df["_is_today_pt"] = False
+            eligible = day_df.iloc[0:0].copy()
+
+        top_star_set, _ = _top_star_sets(eligible)
+        day_df["_away_top_star"] = day_df.apply(
+            lambda r: bool(r.get("_is_today_pt", False))
+            and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
+            axis=1,
+        )
+        day_df["_home_top_star"] = day_df.apply(
+            lambda r: bool(r.get("_is_today_pt", False))
+            and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
+            axis=1,
+        )
+        if sort_mode == "Tip time" and "Tip dt (PT)" in day_df.columns:
+            day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
+        else:
+            day_df = day_df.sort_values("aWI", ascending=False)
+        for _, row in day_df.iterrows():
+            st.markdown(_render_menu_row(row), unsafe_allow_html=True)
+        return
 
     if date_options:
         for local_date, day_name in df_dates.itertuples(index=False, name=None):
@@ -1260,11 +1331,12 @@ def render_full_dashboard(title: str, caption: str) -> None:
             selected_date=None,
             default_day=default_day,
         )
-    with right:
-        render_recommendations_module(df, slate_day=selected)
+        render_recommendations_module(df, slate_day=selected, wrapper_class="recs-mobile")
         st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games</div>", unsafe_allow_html=True)
         st.divider()
-        render_table(df=df, df_dates=df_dates, date_options=date_options)
+        render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=selected)
+    with right:
+        render_recommendations_module(df, slate_day=selected, wrapper_class="recs-desktop")
 
     # Hidden machine-readable metadata so the bot can align tweet text
     # with the exact slate rendered on the deployed dashboard.
@@ -1338,4 +1410,4 @@ def render_table_page() -> None:
     if df.empty:
         st.warning("No NBA regular season or playoff games found. Enjoy the break!")
         return
-    render_table(df=df, df_dates=df_dates, date_options=date_options)
+    render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=None)
