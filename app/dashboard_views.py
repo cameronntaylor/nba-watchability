@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import datetime as dt
+import textwrap
 from typing import Tuple, Dict, List
 
 import altair as alt
@@ -91,6 +92,26 @@ div[data-testid="collapsedControl"] {display: none;}
 }
 .menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
+
+/* Recommendations module */
+.rec-wrap {margin-bottom: 10px;}
+.rec-head {font-size: 22px; font-weight: 950; color: rgba(49,51,63,0.90); letter-spacing: 0.2px; margin-bottom: 8px;}
+.rec-card {border: 1px solid rgba(49,51,63,0.15); border-radius: 14px; padding: 12px 12px; background: rgba(255,255,255,0.92); box-shadow: 0 8px 22px rgba(0,0,0,0.06); margin-bottom: 10px;}
+.rec-title {font-size: 20px; font-weight: 900; color: rgba(49,51,63,0.90); line-height: 1.1;}
+.rec-title.now {color: rgba(214, 39, 40, 0.90);}   /* red tint */
+.rec-title.upcoming {color: rgba(31, 119, 180, 0.90);} /* blue tint */
+.rec-title.doubleheader {color: rgba(44, 160, 44, 0.90);} /* green tint */
+.rec-sub {margin-top: 2px; font-size: 18px; font-weight: 900; color: rgba(0,0,0,0.92); line-height: 1.1;}
+.rec-row {margin-top: 8px; display:flex; align-items:center; gap:10px;}
+.rec-teams {flex:1; display:flex; flex-direction: column; gap:6px; min-width: 0;}
+.rec-teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
+.rec-teamline img {width: 34px; height: 34px;}
+.rec-teamline .name {font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.rec-meta {display:flex; flex-direction: column; align-items: flex-end; gap:6px;}
+.chip {display:inline-flex; align-items:center; justify-content:center; border: 1px solid rgba(49,51,63,0.20); border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 700; color: rgba(49,51,63,0.80); background: rgba(255,255,255,0.95);}
+.chip a {color: rgba(49,51,63,0.85); text-decoration: none;}
+.rec-live {font-size: 12px; font-weight: 900; color: #d62728;}
+.rec-wi {font-size: 12px; font-weight: 800; color: rgba(49,51,63,0.78);}
 /* Small "info" hover icon next to the dashboard caption. */
 .info-icon {display:inline-flex; align-items:center; justify-content:center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid rgba(49,51,63,0.25); color: rgba(49,51,63,0.8); font-size: 13px; font-weight: 700;}
 .info-icon[data-tooltip] {cursor: pointer; position: relative;}
@@ -217,6 +238,280 @@ def _parse_score(x):
         return int(float(x))
     except Exception:
         return None
+
+
+def _parse_time_remaining(tr: str | None) -> tuple[int | None, int | None]:
+    """
+    Returns (quarter, seconds_remaining_in_quarter) if parsable.
+    Expected formats include: '5:32 Q3', '12:00 Q4', '0.0 Q2'.
+    """
+    if tr is None:
+        return None, None
+    s = str(tr).strip().upper()
+    if not s:
+        return None, None
+    try:
+        import re
+
+        m = re.search(r"(\\d{1,2})[:.](\\d{1,2})\\s*Q(\\d)", s)
+    except Exception:
+        m = None
+    if not m:
+        return None, None
+    mm = int(m.group(1))
+    ss = int(m.group(2))
+    q = int(m.group(3))
+    return q, mm * 60 + ss
+
+
+def _w2wn_live_boost(time_remaining: str | None) -> float:
+    q, sec = _parse_time_remaining(time_remaining)
+    if q is None or sec is None:
+        return 0.0
+    if q == 3:
+        return 3.0
+    if q >= 4:
+        if sec >= 5 * 60:
+            return 5.0
+        if sec >= 2 * 60:
+            return 4.0
+        if sec >= 1:
+            return 3.0
+    return 0.0
+
+
+def _fmt_wait_time(minutes: float) -> str:
+    m = max(0.0, float(minutes))
+    if m > 60:
+        hrs = m / 60.0
+        if hrs >= 2.0:
+            return f"{int(round(hrs))} hours"
+        return f"{hrs:.1f} hours"
+    return f"{int(round(m))} mins"
+
+
+def _pick_slate_df(df: pd.DataFrame, slate_day: str | None) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if slate_day and "Local date" in df.columns:
+        out = df[df["Local date"].astype(str) == str(slate_day)].copy()
+        if not out.empty:
+            return out
+    # Fallback: earliest PT date in the window.
+    if "Local date" in df.columns:
+        dates = sorted({str(x) for x in df["Local date"].dropna().tolist() if str(x).strip()})
+        if dates:
+            return df[df["Local date"].astype(str) == dates[0]].copy()
+    return df.copy()
+
+
+def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None) -> None:
+    """
+    Recommendations:
+      - What to watch now (W2WN)
+      - Best upcoming game tonight
+      - Best doubleheader tonight
+    """
+    if df is None or df.empty:
+        return
+
+    now_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles"))
+    d = _pick_slate_df(df, slate_day)
+    if d is None or d.empty:
+        return
+
+    d["_is_live"] = d.get("Is live", False)
+    d["_status"] = d.get("Status", "pre").astype(str) if "Status" in d.columns else "pre"
+
+    def _minutes_to_tip_row(r) -> float | None:
+        dt_pt = r.get("Tip dt (PT)")
+        if isinstance(dt_pt, dt.datetime):
+            return (dt_pt - now_pt).total_seconds() / 60.0
+        return None
+
+    d["_minutes_to_tip"] = d.apply(_minutes_to_tip_row, axis=1)
+
+    def _w2wn_score_row(r) -> float:
+        wi = float(r.get("aWI") or 0.0)
+        # Treat ESPN 'in' as live even if boolean flag is missing.
+        if bool(r.get("_is_live", False)) or str(r.get("_status") or "").lower() == "in":
+            return wi + float(_w2wn_live_boost(r.get("Time remaining")))
+        if str(r.get("_status") or "").lower() == "pre":
+            m = r.get("_minutes_to_tip")
+            if m is None:
+                # Unknown tip time: strongly de-prioritize.
+                return wi - 1_000_000.0
+            m = max(0.0, float(m))
+            return wi - (m / 2.0)
+        return wi
+
+    d["_w2wn_score"] = d.apply(_w2wn_score_row, axis=1)
+
+    def _chip(where_url: str, provider: str) -> str:
+        url = (where_url or "").strip()
+        if not url:
+            return ""
+        return (
+            f"<span class='chip'><a href='{py_html.escape(url)}' target='_blank' rel='noopener noreferrer'>"
+            f"Where to watch: {py_html.escape(provider or 'League Pass')}</a></span>"
+        )
+
+    def _matchup_block(r) -> str:
+        away = py_html.escape(str(r.get("Away team") or ""))
+        home = py_html.escape(str(r.get("Home team") or ""))
+        away_logo = py_html.escape(str(r.get("Away logo") or ""))
+        home_logo = py_html.escape(str(r.get("Home logo") or ""))
+        away_img = f"<img src='{away_logo}'/>" if away_logo else ""
+        home_img = f"<img src='{home_logo}'/>" if home_logo else ""
+        return (
+            f"<div class='rec-teams'>"
+            f"<div class='rec-teamline'>{away_img}<div class='name'>{away}</div></div>"
+            f"<div class='rec-teamline'>{home_img}<div class='name'>{home}</div></div>"
+            f"</div>"
+        )
+
+    def _tip_pt_et(row) -> str:
+        dt_pt = row.get("Tip dt (PT)")
+        dt_et = row.get("Tip dt (ET)")
+        if isinstance(dt_pt, dt.datetime) and isinstance(dt_et, dt.datetime):
+            dow = dt_pt.strftime("%a")
+            pt_time = (
+                dt_pt.strftime("%I:%M%p")
+                .replace(" 0", " ")
+                .replace("AM", "am")
+                .replace("PM", "pm")
+                .lstrip("0")
+            )
+            et_time = (
+                dt_et.strftime("%I:%M%p")
+                .replace("AM", "am")
+                .replace("PM", "pm")
+                .lstrip("0")
+            )
+            return f"{dow} {pt_time} PT / {et_time} ET"
+        tip_pt = str(row.get("Tip (PT)") or row.get("Tip short") or row.get("Tip display") or "").strip()
+        tip_et = str(row.get("Tip (ET)") or "").strip()
+        if tip_pt and tip_et:
+            # tip_pt already has day/time; avoid repeating 'PT' if present.
+            pt = tip_pt if "PT" in tip_pt else f"{tip_pt} PT"
+            et = tip_et if "ET" in tip_et else f"{tip_et} ET"
+            return f"{pt} / {et}"
+        return tip_pt
+
+    def _rec_card(*, title: str, title_class: str, subtitle: str, row, extra_meta: str = "") -> str:
+        tip_display = py_html.escape(_tip_pt_et(row) or str(row.get("Tip display") or row.get("Tip short") or ""))
+        wi_score = int(round(float(row.get("aWI") or 0.0)))
+        is_live = bool(row.get("_is_live", False)) or str(row.get("_status") or "").lower() == "in"
+        live_line = ""
+        if is_live:
+            tr = str(row.get("Time remaining") or "").strip()
+            live_line = f"🚨 LIVE {py_html.escape(tr)}" if tr else "🚨 LIVE"
+        live_html = f"<div class='rec-live'>{live_line}</div>" if live_line else ""
+        chip = _chip(str(row.get("Where to watch URL") or ""), str(row.get("Where to watch provider") or "") or "League Pass")
+        return textwrap.dedent(
+            f"""
+            <div class="rec-card">
+            <div class="rec-title {py_html.escape(title_class)}">{py_html.escape(title)}</div>
+            <div class="rec-sub">{py_html.escape(subtitle)}</div>
+            <div class="rec-row">
+            {_matchup_block(row)}
+            <div class="rec-meta">
+            <div class="rec-wi">Watchability {wi_score}</div>
+            <div class="rec-wi">{tip_display}</div>
+            {live_html}
+            {chip}
+            {extra_meta}
+            </div>
+            </div>
+            </div>
+            """
+        ).strip()
+
+    cards: list[str] = []
+
+    # 1) What to watch now
+    best_now = d.sort_values(["_w2wn_score", "aWI"], ascending=False).iloc[0]
+    is_live = bool(best_now.get("_is_live", False)) or str(best_now.get("_status") or "").lower() == "in"
+    mins_to_tip = best_now.get("_minutes_to_tip")
+    if is_live:
+        subtitle = "Watch LIVE:"
+    else:
+        if mins_to_tip is None:
+            subtitle = "Watch next:"
+        elif float(mins_to_tip) <= 0:
+            subtitle = "Watch now:"
+        else:
+            subtitle = f"Wait {_fmt_wait_time(float(mins_to_tip))} for"
+    cards.append(_rec_card(title="What to watch now", title_class="now", subtitle=subtitle, row=best_now))
+
+    # 2) Best upcoming game tonight
+    upcoming = d[
+        (d["_status"].astype(str).str.lower() == "pre")
+        & (d.get("_is_live", False) == False)  # noqa: E712
+        & (d["_minutes_to_tip"].notna())
+        & (d["_minutes_to_tip"].astype(float) > 0)
+    ].copy()
+    if not upcoming.empty:
+        best_up = upcoming.sort_values(["aWI", "_minutes_to_tip"], ascending=[False, True]).iloc[0]
+        cards.append(_rec_card(title="Best upcoming game tonight", title_class="upcoming", subtitle="Up next:", row=best_up))
+
+    # 3) Best doubleheader tonight (two games >= 2 hours apart maximizing sum of Watchability).
+    best_pair = None
+    if not upcoming.empty and "Tip dt (PT)" in upcoming.columns:
+        upcoming2 = upcoming.dropna(subset=["Tip dt (PT)"]).sort_values("Tip dt (PT)").copy()
+        tips = upcoming2["Tip dt (PT)"].tolist()
+        best_sum = None
+        for i in range(len(upcoming2)):
+            ti = upcoming2.iloc[i]["Tip dt (PT)"]
+            for j in range(i + 1, len(upcoming2)):
+                tj = upcoming2.iloc[j]["Tip dt (PT)"]
+                if isinstance(ti, dt.datetime) and isinstance(tj, dt.datetime):
+                    if (tj - ti).total_seconds() < 2 * 3600:
+                        continue
+                s = float(upcoming2.iloc[i].get("aWI") or 0.0) + float(upcoming2.iloc[j].get("aWI") or 0.0)
+                if best_sum is None or s > best_sum:
+                    best_sum = s
+                    best_pair = (upcoming2.iloc[i], upcoming2.iloc[j])
+    if best_pair is not None:
+        g1, g2 = best_pair
+        # Render a single card with both matchups stacked and chips aligned with each game.
+        wi_avg = int(round(0.5 * (float(g1.get("aWI") or 0.0) + float(g2.get("aWI") or 0.0))))
+        tip1 = py_html.escape(str(g1.get("Tip display") or g1.get("Tip short") or ""))
+        tip2 = py_html.escape(str(g2.get("Tip display") or g2.get("Tip short") or ""))
+        wi1 = int(round(float(g1.get("aWI") or 0.0)))
+        wi2 = int(round(float(g2.get("aWI") or 0.0)))
+        chip1 = _chip(str(g1.get("Where to watch URL") or ""), str(g1.get("Where to watch provider") or "") or "League Pass")
+        chip2 = _chip(str(g2.get("Where to watch URL") or ""), str(g2.get("Where to watch provider") or "") or "League Pass")
+        html = textwrap.dedent(
+            f"""
+            <div class="rec-card">
+            <div class="rec-title doubleheader">Best doubleheader tonight</div>
+            <div class="rec-sub">Two games (≥2h apart)</div>
+            <div class="rec-wi">Average Watchability {wi_avg}</div>
+            <div class="rec-row">
+              {_matchup_block(g1)}
+              <div class="rec-meta">
+                <div class="rec-wi">Watchability {wi1}</div>
+                <div class="rec-wi">{py_html.escape(_tip_pt_et(g1) or '') or tip1}</div>
+                {chip1}
+              </div>
+            </div>
+            <div class="rec-row">
+              {_matchup_block(g2)}
+              <div class="rec-meta">
+                <div class="rec-wi">Watchability {wi2}</div>
+                <div class="rec-wi">{py_html.escape(_tip_pt_et(g2) or '') or tip2}</div>
+                {chip2}
+              </div>
+            </div>
+            </div>
+            """
+        ).strip()
+        cards.append(html)
+
+    st.markdown("<div class='rec-wrap'><div class='rec-head'>Recommendations</div></div>", unsafe_allow_html=True)
+    for card in cards:
+        st.markdown(card, unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=60 * 10)  # 10 min (live scores)
@@ -736,7 +1031,7 @@ def _render_menu_row(r) -> str:
     if where_url:
         provider = str(r.get("Where to watch provider", "") or "").strip() or "League Pass"
         where_html = (
-            f"<div><a href='{py_html.escape(where_url)}' target='_blank' rel='noopener noreferrer'>Where to watch: {py_html.escape(provider)}</a></div>"
+            f"<div><span class='chip'><a href='{py_html.escape(where_url)}' target='_blank' rel='noopener noreferrer'>Where to watch: {py_html.escape(provider)}</a></span></div>"
         )
     spread = r["Home spread"]
     home_abbr = get_team_abbr(str(r.get("Home team", ""))) or str(r.get("Home team", ""))[:3].upper()
@@ -966,6 +1261,9 @@ def render_full_dashboard(title: str, caption: str) -> None:
             default_day=default_day,
         )
     with right:
+        render_recommendations_module(df, slate_day=selected)
+        st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games</div>", unsafe_allow_html=True)
+        st.divider()
         render_table(df=df, df_dates=df_dates, date_options=date_options)
 
     # Hidden machine-readable metadata so the bot can align tweet text
