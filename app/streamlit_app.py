@@ -11,13 +11,13 @@ import streamlit as st
 
 from app.dashboard_views import render_full_dashboard
 
-st.set_page_config(page_title="NBA Watchability (WI)", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="NBA Watchability", layout="wide", initial_sidebar_state="collapsed")
 
 render_full_dashboard(
-    title="NBA Watchability Today",
+    title="NBA Watchability",
     caption=(
         "NBA Watchability ranks tonight’s games by how worth watching they are, "
-        "using expected competitiveness and team quality (injury-adjusted). "
+        "using expected competitiveness and injury-adjusted team quality. "
         " "
         " "
     ),
