@@ -1073,7 +1073,7 @@ def build_watchability_df(
             is_key = float(share) >= KEY_INJURY_IMPACT_SHARE_THRESHOLD
             is_top_out = bool(top_athlete_id) and pid_str == top_athlete_id and _status_priority(st_display) >= 3
             if is_key or is_top_out:
-                key_injuries.append(f"{name}: {st_display}")
+                key_injuries.append(f"{name} ({st_display})")
 
         total_delta = sum(float(d["health_delta"]) for d in detail if d.get("health_delta") is not None)
         if total_delta > 0:

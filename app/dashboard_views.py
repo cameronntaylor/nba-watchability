@@ -57,12 +57,13 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-teams .name {font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .menu-teams .at {opacity: 0.6; padding: 0 2px;}
 .menu-matchup {flex: 1; min-width: 0; display:flex; flex-direction: column; gap: 2px;}
-.menu-matchup .teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
+.menu-matchup .teamline {display:flex; align-items:center; gap:8px; min-width: 0; flex-wrap: wrap; row-gap: 2px;}
 .menu-matchup img {width: 34px; height: 34px;}
-.menu-matchup .name {font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.menu-matchup .name {flex: 1 1 auto; min-width: 0; font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .menu-matchup .name-full {display: inline;}
 .menu-matchup .name-short {display: none;}
-.menu-matchup .record {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-matchup .record {flex: 0 0 auto; font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.menu-matchup .record-inline {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap; margin-left: 6px;}
 .menu-matchup .sep {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.35); white-space: nowrap;}
 .menu-matchup .health {font-size: 11px; font-weight: 600; color: rgba(49,51,63,0.65); white-space: nowrap;}
 .menu-matchup .health[data-tooltip] {cursor: pointer; text-decoration: underline dotted rgba(49,51,63,0.35); position: relative;}
@@ -95,6 +96,37 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-meta {width: 240px; font-size: 13px; color: rgba(49,51,63,0.75); line-height: 1.3;}
 .menu-meta div {margin: 1px 0;}
 
+/* Consolidated matchup badges (stars + injuries) */
+.matchup-badges {display:flex; flex-wrap: wrap; gap: 6px; margin-left: 42px; margin-top: 2px;}
+.badge {display:inline-flex; align-items:center; border: 1px solid rgba(49,51,63,0.20); border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 750; color: rgba(49,51,63,0.75); background: rgba(255,255,255,0.95);}
+.badge[data-tooltip] {cursor: pointer; text-decoration: underline dotted rgba(49,51,63,0.35); position: relative;}
+.badge[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  top: 125%;
+  z-index: 9999;
+  max-width: 340px;
+  white-space: pre-line;
+  background: rgba(255,255,255,0.98);
+  color: rgba(49,51,63,0.95);
+  border: 1px solid rgba(49,51,63,0.20);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.10);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.badge[data-tooltip]:hover::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 110%;
+  border-width: 6px;
+  border-style: solid;
+  border-color: transparent transparent rgba(49,51,63,0.20) transparent;
+}
+
 /* Recommendations module */
 .rec-wrap {margin-bottom: 10px;}
 .rec-head {font-size: 22px; font-weight: 950; color: rgba(49,51,63,0.90); letter-spacing: 0.2px; margin-bottom: 8px;}
@@ -106,12 +138,13 @@ div[data-testid="collapsedControl"] {display: none;}
 .rec-sub {margin-top: 2px; font-size: 18px; font-weight: 900; color: rgba(0,0,0,0.92); line-height: 1.1;}
 .rec-row {margin-top: 8px; display:flex; align-items:center; gap:10px;}
 .rec-teams {flex:1; display:flex; flex-direction: column; gap:6px; min-width: 0;}
-.rec-teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
+.rec-teamline {display:flex; align-items:center; gap:8px; min-width: 0; flex-wrap: wrap; row-gap: 2px;}
 .rec-teamline img {width: 34px; height: 34px;}
-.rec-teamline .name {font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.rec-teamline .name {flex: 1 1 auto; min-width: 0; font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
 .rec-teamline .name-full {display: inline;}
 .rec-teamline .name-short {display: none;}
-.rec-teamline .record {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.rec-teamline .record {flex: 0 0 auto; font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
+.rec-teamline .record-inline {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap; margin-left: 6px;}
 .rec-teamline .sep {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.35); white-space: nowrap;}
 .rec-teamline .health {font-size: 11px; font-weight: 600; color: rgba(49,51,63,0.65); white-space: nowrap;}
 .rec-teamline .health[data-tooltip] {cursor: pointer; text-decoration: underline dotted rgba(49,51,63,0.35); position: relative;}
@@ -190,6 +223,7 @@ div[data-testid="collapsedControl"] {display: none;}
   .menu-matchup {min-width: 0; flex: 1 1 calc(100% - 102px);}
   .menu-meta {width: 100%; padding-left: 92px; font-size: 14px; line-height: 1.35;}
   .menu-matchup .record {font-size: 11px;}
+  .matchup-badges {margin-left: 42px;}
   .menu-matchup .name-full {display: none;}
   .menu-matchup .name-short {display: inline;}
   .rec-teamline .name-full {display: none;}
@@ -555,28 +589,33 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
 
         away_inj = str(row.get("Away Key Injuries", "") or "").strip()
         home_inj = str(row.get("Home Key Injuries", "") or "").strip()
-        away_tip = py_html.escape(away_inj) if away_inj else ""
-        home_tip = py_html.escape(home_inj) if home_inj else ""
 
-        away_star_html = ""
-        home_star_html = ""
+        stars_lines: list[str] = []
         if bool(row.get("_away_top_star", False)):
-            tip = py_html.escape(str(row.get("Away Star Player") or ""))
-            away_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+            n = str(row.get("Away Star Player") or "").strip()
+            if n:
+                stars_lines.append(f"{away_mascot}: {n}")
         if bool(row.get("_home_top_star", False)):
-            tip = py_html.escape(str(row.get("Home Star Player") or ""))
-            home_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+            n = str(row.get("Home Star Player") or "").strip()
+            if n:
+                stars_lines.append(f"{home_mascot}: {n}")
+        stars_tooltip = py_html.escape("\n".join(stars_lines)) if stars_lines else ""
 
-        away_key_html = (
-            f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">❗ Key Injuries</div>"
-            if away_inj
-            else ""
-        )
-        home_key_html = (
-            f"<div class='sep'>|</div><div class='health' data-tooltip=\"{home_tip}\">❗ Key Injuries</div>"
-            if home_inj
-            else ""
-        )
+        inj_lines: list[str] = []
+        if away_inj:
+            inj_lines.append(f"{away_mascot}: {away_inj}")
+        if home_inj:
+            inj_lines.append(f"{home_mascot}: {home_inj}")
+        inj_tooltip = py_html.escape("\n".join(inj_lines)) if inj_lines else ""
+
+        badges_html = ""
+        if stars_tooltip or inj_tooltip:
+            badges = []
+            if stars_tooltip:
+                badges.append(f"<span class='badge' data-tooltip=\"{stars_tooltip}\">⭐ Top Stars</span>")
+            if inj_tooltip:
+                badges.append(f"<span class='badge' data-tooltip=\"{inj_tooltip}\">❗ Key Injuries</span>")
+            badges_html = f"<div class='matchup-badges'>{''.join(badges)}</div>"
 
         away_logo = py_html.escape(str(row.get("Away logo") or ""))
         home_logo = py_html.escape(str(row.get("Home logo") or ""))
@@ -597,16 +636,13 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             f"<div class='menu-matchup'>"
             f"<div class='teamline'>"
             f"{away_img}"
-            f"<div class='name'><span class='name-full'>{away}</span><span class='name-short'>{away_short}</span></div>"
-            f"<div class='record'>{record_away}</div>"
-            f"{away_star_html}{away_key_html}"
+            f"<div class='name'><span class='name-full'>{away}</span><span class='name-short'>{away_short}</span><span class='record-inline'>{record_away}</span></div>"
             f"</div>"
             f"<div class='teamline'>"
             f"{home_img}"
-            f"<div class='name'><span class='name-full'>{home}</span><span class='name-short'>{home_short}</span></div>"
-            f"<div class='record'>{record_home}</div>"
-            f"{home_star_html}{home_key_html}"
+            f"<div class='name'><span class='name-full'>{home}</span><span class='name-short'>{home_short}</span><span class='record-inline'>{record_home}</span></div>"
             f"</div>"
+            f"{badges_html}"
             f"</div>"
             f"<div class='menu-meta'>"
             f"<div class='rec-tip'>{tip_line}</div>"
@@ -1514,28 +1550,32 @@ def _render_menu_row(r) -> str:
     away_inj = str(r.get("Away Key Injuries", "") or "").strip()
     home_inj = str(r.get("Home Key Injuries", "") or "").strip()
 
-    away_tip = py_html.escape(away_inj) if away_inj else ""
-    home_tip = py_html.escape(home_inj) if home_inj else ""
-
-    away_star_html = ""
-    home_star_html = ""
+    stars_lines: list[str] = []
     if bool(r.get("_away_top_star", False)):
-        tip = py_html.escape(str(r.get("Away Star Player") or ""))
-        away_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+        n = str(r.get("Away Star Player") or "").strip()
+        if n:
+            stars_lines.append(f"{away_mascot}: {n}")
     if bool(r.get("_home_top_star", False)):
-        tip = py_html.escape(str(r.get("Home Star Player") or ""))
-        home_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+        n = str(r.get("Home Star Player") or "").strip()
+        if n:
+            stars_lines.append(f"{home_mascot}: {n}")
+    stars_tooltip = py_html.escape("\n".join(stars_lines)) if stars_lines else ""
 
-    away_key_html = (
-        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">❗ Key Injuries</div>"
-        if away_inj
-        else ""
-    )
-    home_key_html = (
-        f"<div class='sep'>|</div><div class='health' data-tooltip=\"{home_tip}\">❗ Key Injuries</div>"
-        if home_inj
-        else ""
-    )
+    inj_lines: list[str] = []
+    if away_inj:
+        inj_lines.append(f"{away_mascot}: {away_inj}")
+    if home_inj:
+        inj_lines.append(f"{home_mascot}: {home_inj}")
+    inj_tooltip = py_html.escape("\n".join(inj_lines)) if inj_lines else ""
+
+    badges_html = ""
+    if stars_tooltip or inj_tooltip:
+        badges = []
+        if stars_tooltip:
+            badges.append(f"<span class='badge' data-tooltip=\"{stars_tooltip}\">⭐ Top Stars</span>")
+        if inj_tooltip:
+            badges.append(f"<span class='badge' data-tooltip=\"{inj_tooltip}\">❗ Key Injuries</span>")
+        badges_html = f"<div class='matchup-badges'>{''.join(badges)}</div>"
     away_logo = py_html.escape(str(r["Away logo"]))
     home_logo = py_html.escape(str(r["Home logo"]))
     away_img = f"<img src='{away_logo}'/>" if away_logo else ""
@@ -1555,18 +1595,13 @@ def _render_menu_row(r) -> str:
 <div class="menu-matchup">
 <div class="teamline">
 {away_img}
-<div class="name"><span class="name-full">{away}</span><span class="name-short">{away_short}</span></div>
-<div class="record">{record_away}</div>
-{away_star_html}
-{away_key_html}
+<div class="name"><span class="name-full">{away}</span><span class="name-short">{away_short}</span><span class="record-inline">{record_away}</span></div>
 </div>
 <div class="teamline">
 {home_img}
-<div class="name"><span class="name-full">{home}</span><span class="name-short">{home_short}</span></div>
-<div class="record">{record_home}</div>
-{home_star_html}
-{home_key_html}
+<div class="name"><span class="name-full">{home}</span><span class="name-short">{home_short}</span><span class="record-inline">{record_home}</span></div>
 </div>
+{badges_html}
 </div>
 <div class="menu-meta">
 <div>{tip_line}</div>
