@@ -748,6 +748,15 @@ def build_watchability_df(
 
     df["Tip display"] = df.apply(_tip_display, axis=1)
 
+    if not include_post:
+        df = df[df["Status"] != "post"].copy()
+
+    game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
+    injury_reports, watch_providers, close_spreads_espn = (
+        _load_espn_game_summary_maps(game_ids) if game_ids else ({}, {}, {})
+    )
+    league_injuries_by_team = _load_espn_league_injuries_by_team(ttl_seconds=5 * 60)
+
     # --- Close-spread freezing + live blending (Odds API) ---
     # We treat Odds API "Home spread" as the current spread signal (often updates live).
     # For the "close spread", prefer ESPN's summary close spread when available because it can be fetched
@@ -823,15 +832,6 @@ def build_watchability_df(
 
     df["Home spread effective"] = df.apply(_effective_spread_row, axis=1)
     df["|spread effective|"] = df["Home spread effective"].apply(lambda x: None if x is None else abs(float(x)))
-
-    if not include_post:
-        df = df[df["Status"] != "post"].copy()
-
-    game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
-    injury_reports, watch_providers, close_spreads_espn = (
-        _load_espn_game_summary_maps(game_ids) if game_ids else ({}, {}, {})
-    )
-    league_injuries_by_team = _load_espn_league_injuries_by_team(ttl_seconds=5 * 60)
 
     # NBA.com game URLs (match by PT date + teams; teams play at most once per date).
     pt_dates_iso = {
