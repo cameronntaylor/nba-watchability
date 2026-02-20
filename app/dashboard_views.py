@@ -19,7 +19,7 @@ from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps
-from core.team_meta import get_logo_url, get_team_abbr
+from core.team_meta import get_logo_url, get_team_abbr, get_team_mascot
 from core.health_espn import compute_team_player_impacts, injury_weight
 from core.importance import compute_importance_detail_map
 from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
@@ -60,6 +60,8 @@ div[data-testid="collapsedControl"] {display: none;}
 .menu-matchup .teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
 .menu-matchup img {width: 34px; height: 34px;}
 .menu-matchup .name {font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.menu-matchup .name-full {display: inline;}
+.menu-matchup .name-short {display: none;}
 .menu-matchup .record {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
 .menu-matchup .sep {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.35); white-space: nowrap;}
 .menu-matchup .health {font-size: 11px; font-weight: 600; color: rgba(49,51,63,0.65); white-space: nowrap;}
@@ -107,6 +109,8 @@ div[data-testid="collapsedControl"] {display: none;}
 .rec-teamline {display:flex; align-items:center; gap:8px; min-width: 0;}
 .rec-teamline img {width: 34px; height: 34px;}
 .rec-teamline .name {font-size: 16px; font-weight: 800; color: rgba(0,0,0,0.90); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+.rec-teamline .name-full {display: inline;}
+.rec-teamline .name-short {display: none;}
 .rec-teamline .record {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.65); white-space: nowrap;}
 .rec-teamline .sep {font-size: 11px; font-weight: 400; color: rgba(49,51,63,0.35); white-space: nowrap;}
 .rec-teamline .health {font-size: 11px; font-weight: 600; color: rgba(49,51,63,0.65); white-space: nowrap;}
@@ -143,6 +147,9 @@ div[data-testid="collapsedControl"] {display: none;}
 .rec-live {font-size: 12px; font-weight: 900; color: #d62728;}
 .rec-score {font-size: 12px; font-weight: 900; color: #d62728; margin-top: -2px;}
 .rec-wi {font-size: 12px; font-weight: 800; color: rgba(49,51,63,0.78);}
+.rec-tip {font-weight: 850; color: rgba(49,51,63,0.82);}
+.rec-menu-row {padding-top: 10px; padding-bottom: 10px;}
+.rec-menu-row + .rec-menu-row {border-top: 1px solid rgba(49,51,63,0.12);}
 /* Small "info" hover icon next to the dashboard caption. */
 .info-icon {display:inline-flex; align-items:center; justify-content:center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid rgba(49,51,63,0.25); color: rgba(49,51,63,0.8); font-size: 13px; font-weight: 700;}
 .info-icon[data-tooltip] {cursor: pointer; position: relative;}
@@ -183,6 +190,10 @@ div[data-testid="collapsedControl"] {display: none;}
   .menu-matchup {min-width: 0; flex: 1 1 calc(100% - 102px);}
   .menu-meta {width: 100%; padding-left: 92px; font-size: 14px; line-height: 1.35;}
   .menu-matchup .record {font-size: 11px;}
+  .menu-matchup .name-full {display: none;}
+  .menu-matchup .name-short {display: inline;}
+  .rec-teamline .name-full {display: none;}
+  .rec-teamline .name-short {display: inline;}
 }
 
 /* On mobile, show Recommendations above the All Games menu. */
@@ -383,6 +394,59 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
 
     d["_minutes_to_tip"] = d.apply(_minutes_to_tip_row, axis=1)
 
+    today_pt = now_pt.date()
+
+    def _is_today_pt_tip(x) -> bool:
+        if isinstance(x, dt.datetime):
+            return x.date() == today_pt
+        return False
+
+    def _top_star_set(day_df: pd.DataFrame) -> set[str]:
+        entries: list[tuple[float, str]] = []
+        for _, r in day_df.iterrows():
+            away_key = _normalize_team_name(str(r.get("Away team", "")))
+            home_key = _normalize_team_name(str(r.get("Home team", "")))
+            try:
+                af = float(r.get("Star factor (away)") or 0.0)
+            except Exception:
+                af = 0.0
+            try:
+                hf = float(r.get("Star factor (home)") or 0.0)
+            except Exception:
+                hf = 0.0
+            if af > 0 and away_key:
+                entries.append((af, away_key))
+            if hf > 0 and home_key:
+                entries.append((hf, home_key))
+
+        entries.sort(key=lambda x: x[0], reverse=True)
+        top_keys: list[str] = []
+        for _v, k in entries:
+            if k and k not in top_keys:
+                top_keys.append(k)
+            if len(top_keys) >= 5:
+                break
+        return set(top_keys)
+
+    # Populate top-star flags on this slate (used by recommendation row rendering).
+    if "Tip dt (PT)" in d.columns:
+        d["_is_today_pt"] = d["Tip dt (PT)"].apply(_is_today_pt_tip)
+        eligible = d[d["_is_today_pt"]].copy()
+    else:
+        d["_is_today_pt"] = False
+        eligible = d.iloc[0:0].copy()
+    top_star_set = _top_star_set(eligible)
+    d["_away_top_star"] = d.apply(
+        lambda r: bool(r.get("_is_today_pt", False))
+        and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
+        axis=1,
+    )
+    d["_home_top_star"] = d.apply(
+        lambda r: bool(r.get("_is_today_pt", False))
+        and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
+        axis=1,
+    )
+
     def _w2wn_score_row(r) -> float:
         wi = float(r.get("aWI") or 0.0)
         # Treat ESPN 'in' as live even if boolean flag is missing.
@@ -425,9 +489,142 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         home_abbr = get_team_abbr(home) or home[:3].upper()
         return "?" if spread is None else f"{home_abbr} {float(spread):+g}"
 
+    def _menu_like_row(row) -> str:
+        awi_score = int(round(float(row.get("aWI") or 0.0)))
+        label = py_html.escape(str(row.get("Region") or ""))
+
+        c_str, q_str = _subscores_row(row)
+
+        live_badge = ""
+        is_live = bool(row.get("_is_live", False)) or str(row.get("_status") or "").lower() == "in"
+        if is_live:
+            away_s = _parse_score(row.get("Away score"))
+            home_s = _parse_score(row.get("Home score"))
+            tr = str(row.get("Time remaining") or "").strip()
+            tr_line = f"<div class='live-time'>🚨 LIVE {py_html.escape(tr)}</div>" if tr else "<div class='live-time'>🚨 LIVE</div>"
+            if away_s is not None and home_s is not None:
+                live_badge = f"{tr_line}<div class='live-badge'>{int(away_s)} - {int(home_s)}</div>"
+            else:
+                live_badge = tr_line
+
+        away_full = str(row.get("Away team") or "")
+        home_full = str(row.get("Home team") or "")
+        away_mascot = get_team_mascot(away_full) or away_full
+        home_mascot = get_team_mascot(home_full) or home_full
+        away = py_html.escape(away_full)
+        home = py_html.escape(home_full)
+        away_short = py_html.escape(str(away_mascot))
+        home_short = py_html.escape(str(home_mascot))
+
+        dt_pt = row.get("Tip dt (PT)")
+        dt_et = row.get("Tip dt (ET)")
+        if isinstance(dt_pt, dt.datetime) and isinstance(dt_et, dt.datetime):
+            dow = dt_pt.strftime("%a")
+            pt_time = (
+                dt_pt.strftime("%I:%M%p")
+                .replace(" 0", " ")
+                .replace("AM", "am")
+                .replace("PM", "pm")
+                .lstrip("0")
+            )
+            et_time = (
+                dt_et.strftime("%I:%M%p")
+                .replace("AM", "am")
+                .replace("PM", "pm")
+                .lstrip("0")
+            )
+            tip_line = f"Tip {dow} {pt_time} PT / {et_time} ET"
+        else:
+            tip_line = str(row.get("Tip (PT)", "Unknown"))
+            tip_line = f"Tip {tip_line}"
+        tip_line = py_html.escape(tip_line)
+
+        spread_str = py_html.escape(_spread_str(row))
+
+        where_url = str(row.get("Where to watch URL", "") or "").strip()
+        where_html = ""
+        if where_url:
+            provider = str(row.get("Where to watch provider", "") or "").strip() or "League Pass"
+            where_html = (
+                f"<div><span class='chip'><a href='{py_html.escape(where_url)}' target='_blank' rel='noopener noreferrer'>"
+                f"Where to watch: {py_html.escape(provider)}</a></span></div>"
+            )
+
+        record_away = py_html.escape(str(row.get("Record (away)", "—")))
+        record_home = py_html.escape(str(row.get("Record (home)", "—")))
+
+        away_inj = str(row.get("Away Key Injuries", "") or "").strip()
+        home_inj = str(row.get("Home Key Injuries", "") or "").strip()
+        away_tip = py_html.escape(away_inj) if away_inj else ""
+        home_tip = py_html.escape(home_inj) if home_inj else ""
+
+        away_star_html = ""
+        home_star_html = ""
+        if bool(row.get("_away_top_star", False)):
+            tip = py_html.escape(str(row.get("Away Star Player") or ""))
+            away_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+        if bool(row.get("_home_top_star", False)):
+            tip = py_html.escape(str(row.get("Home Star Player") or ""))
+            home_star_html = f"<div class='sep'>|</div><div class='health' data-tooltip=\"{tip}\">⭐ Top Star</div>"
+
+        away_key_html = (
+            f"<div class='sep'>|</div><div class='health' data-tooltip=\"{away_tip}\">❗ Key Injuries</div>"
+            if away_inj
+            else ""
+        )
+        home_key_html = (
+            f"<div class='sep'>|</div><div class='health' data-tooltip=\"{home_tip}\">❗ Key Injuries</div>"
+            if home_inj
+            else ""
+        )
+
+        away_logo = py_html.escape(str(row.get("Away logo") or ""))
+        home_logo = py_html.escape(str(row.get("Home logo") or ""))
+        away_img = f"<img src='{away_logo}'/>" if away_logo else ""
+        home_img = f"<img src='{home_logo}'/>" if home_logo else ""
+
+        return (
+            f"<div class='menu-row rec-menu-row'>"
+            f"<div class='menu-awi'>"
+            f"<div class='label'>{label}</div>"
+            f"<div class='score'>Watchability {awi_score}</div>"
+            f"<div class='subscores'>"
+            f"<span class='subscore'>Competitiveness {py_html.escape(c_str)}</span>"
+            f"<span class='subscore'>Team Quality {py_html.escape(q_str)}</span>"
+            f"</div>"
+            f"{live_badge}"
+            f"</div>"
+            f"<div class='menu-matchup'>"
+            f"<div class='teamline'>"
+            f"{away_img}"
+            f"<div class='name'><span class='name-full'>{away}</span><span class='name-short'>{away_short}</span></div>"
+            f"<div class='record'>{record_away}</div>"
+            f"{away_star_html}{away_key_html}"
+            f"</div>"
+            f"<div class='teamline'>"
+            f"{home_img}"
+            f"<div class='name'><span class='name-full'>{home}</span><span class='name-short'>{home_short}</span></div>"
+            f"<div class='record'>{record_home}</div>"
+            f"{home_star_html}{home_key_html}"
+            f"</div>"
+            f"</div>"
+            f"<div class='menu-meta'>"
+            f"<div class='rec-tip'>{tip_line}</div>"
+            f"<div>Spread: {spread_str}</div>"
+            f"{where_html}"
+            f"</div>"
+            f"</div>"
+        )
+
     def _matchup_block(r) -> str:
-        away = py_html.escape(str(r.get("Away team") or ""))
-        home = py_html.escape(str(r.get("Home team") or ""))
+        away_full = str(r.get("Away team") or "")
+        home_full = str(r.get("Home team") or "")
+        away_mascot = get_team_mascot(away_full) or away_full
+        home_mascot = get_team_mascot(home_full) or home_full
+        away = py_html.escape(away_full)
+        home = py_html.escape(home_full)
+        away_short = py_html.escape(str(away_mascot))
+        home_short = py_html.escape(str(home_mascot))
         away_logo = py_html.escape(str(r.get("Away logo") or ""))
         home_logo = py_html.escape(str(r.get("Home logo") or ""))
         away_img = f"<img src='{away_logo}'/>" if away_logo else ""
@@ -462,8 +659,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
 
         return (
             f"<div class='rec-teams'>"
-            f"<div class='rec-teamline'>{away_img}<div class='name'>{away}</div><div class='record'>{record_away}</div>{away_star_html}{away_key_html}</div>"
-            f"<div class='rec-teamline'>{home_img}<div class='name'>{home}</div><div class='record'>{record_home}</div>{home_star_html}{home_key_html}</div>"
+            f"<div class='rec-teamline'>{away_img}<div class='name'><span class='name-full'>{away}</span><span class='name-short'>{away_short}</span></div><div class='record'>{record_away}</div>{away_star_html}{away_key_html}</div>"
+            f"<div class='rec-teamline'>{home_img}<div class='name'><span class='name-full'>{home}</span><span class='name-short'>{home_short}</span></div><div class='record'>{record_home}</div>{home_star_html}{home_key_html}</div>"
             f"</div>"
         )
 
@@ -570,12 +767,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
 
     def _rec_card_multi(*, title: str, title_class: str, subtitle: str, rows: list) -> str:
         # rows: list of dataframe rows (Series-like)
-        inner_rows = "\n".join(
-            [
-                f"<div class=\"rec-row\">{_matchup_block(r)}{_rec_meta_block(r)}</div>"
-                for r in rows
-            ]
-        )
+        inner_rows = "\n".join([_menu_like_row(r) for r in rows])
         return textwrap.dedent(
             f"""
             <div class="rec-card">
@@ -639,6 +831,10 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             r2 = upcoming_sorted.iloc[1]
             if float(r2.get("aWI") or 0.0) > 50.0:
                 rows.append(r2)
+        if len(upcoming_sorted) > 2:
+            r3 = upcoming_sorted.iloc[2]
+            if float(r3.get("aWI") or 0.0) > 50.0:
+                rows.append(r3)
         cards.append(_rec_card_multi(title="Best upcoming tonight", title_class="upcoming", subtitle="", rows=rows))
 
     # 3) Best doubleheader tonight (disabled for now; keep infra).
@@ -1278,8 +1474,14 @@ def _render_menu_row(r) -> str:
         else:
             live_badge = f"{tr_line}"
 
-    away = py_html.escape(str(r["Away team"]))
-    home = py_html.escape(str(r["Home team"]))
+    away_full = str(r["Away team"])
+    home_full = str(r["Home team"])
+    away_mascot = get_team_mascot(away_full) or away_full
+    home_mascot = get_team_mascot(home_full) or home_full
+    away = py_html.escape(away_full)
+    home = py_html.escape(home_full)
+    away_short = py_html.escape(str(away_mascot))
+    home_short = py_html.escape(str(home_mascot))
     dt_pt = r.get("Tip dt (PT)")
     dt_et = r.get("Tip dt (ET)")
     if dt_pt is not None and dt_et is not None:
@@ -1353,14 +1555,14 @@ def _render_menu_row(r) -> str:
 <div class="menu-matchup">
 <div class="teamline">
 {away_img}
-<div class="name">{away}</div>
+<div class="name"><span class="name-full">{away}</span><span class="name-short">{away_short}</span></div>
 <div class="record">{record_away}</div>
 {away_star_html}
 {away_key_html}
 </div>
 <div class="teamline">
 {home_img}
-<div class="name">{home}</div>
+<div class="name"><span class="name-full">{home}</span><span class="name-short">{home_short}</span></div>
 <div class="record">{record_home}</div>
 {home_star_html}
 {home_key_html}
@@ -1563,11 +1765,11 @@ def render_full_dashboard(title: str, caption: str) -> None:
             default_day=default_day,
         )
         render_recommendations_module(df, slate_day=selected, wrapper_class="recs-mobile")
+    with right:
+        render_recommendations_module(df, slate_day=selected, wrapper_class="recs-desktop")
         st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games</div>", unsafe_allow_html=True)
         st.divider()
         render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=selected)
-    with right:
-        render_recommendations_module(df, slate_day=selected, wrapper_class="recs-desktop")
 
     # Hidden machine-readable metadata so the bot can align tweet text
     # with the exact slate rendered on the deployed dashboard.

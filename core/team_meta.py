@@ -38,6 +38,39 @@ TEAM_ABBR = {
     "washington wizards": "WAS",
 }
 
+TEAM_MASCOT = {
+    "atlanta hawks": "Hawks",
+    "boston celtics": "Celtics",
+    "brooklyn nets": "Nets",
+    "charlotte hornets": "Hornets",
+    "chicago bulls": "Bulls",
+    "cleveland cavaliers": "Cavaliers",
+    "dallas mavericks": "Mavericks",
+    "denver nuggets": "Nuggets",
+    "detroit pistons": "Pistons",
+    "golden state warriors": "Warriors",
+    "houston rockets": "Rockets",
+    "indiana pacers": "Pacers",
+    "los angeles clippers": "Clippers",
+    "los angeles lakers": "Lakers",
+    "memphis grizzlies": "Grizzlies",
+    "miami heat": "Heat",
+    "milwaukee bucks": "Bucks",
+    "minnesota timberwolves": "Timberwolves",
+    "new orleans pelicans": "Pelicans",
+    "new york knicks": "Knicks",
+    "oklahoma city thunder": "Thunder",
+    "orlando magic": "Magic",
+    "philadelphia 76ers": "76ers",
+    "phoenix suns": "Suns",
+    "portland trail blazers": "Trail Blazers",
+    "sacramento kings": "Kings",
+    "san antonio spurs": "Spurs",
+    "toronto raptors": "Raptors",
+    "utah jazz": "Jazz",
+    "washington wizards": "Wizards",
+}
+
 
 def normalize_team_name(name: str) -> str:
     # Keep in sync with `core.standings._normalize_team_name` behavior (but avoid importing it here).
@@ -54,6 +87,21 @@ def normalize_team_name(name: str) -> str:
 
 def get_team_abbr(team_name: str) -> Optional[str]:
     return TEAM_ABBR.get(normalize_team_name(team_name))
+
+
+def get_team_mascot(team_name: str) -> Optional[str]:
+    """
+    Returns the mascot/nickname (e.g. 'Lakers') for display in compact/mobile layouts.
+    """
+    n = normalize_team_name(team_name)
+    mascot = TEAM_MASCOT.get(n)
+    if mascot:
+        return mascot
+    # Fallback heuristic: last token (keeps something readable for unknown inputs).
+    parts = [p for p in n.split(" ") if p]
+    if not parts:
+        return None
+    return parts[-1].title()
 
 
 def get_logo_url(team_name: str, size: int = 500) -> Optional[str]:
