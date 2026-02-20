@@ -20,6 +20,7 @@ from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps
 from core.team_meta import get_logo_url
 from core.team_meta import get_team_abbr
+from core.results_espn import extract_closing_spreads
 from core.watchability_v2_params import (
     INJURY_OVERALL_IMPORTANCE_WEIGHT,
     KEY_INJURY_IMPACT_SHARE_THRESHOLD,
@@ -39,6 +40,85 @@ def _parse_score(x: Any) -> int | None:
         return int(float(x))
     except Exception:
         return None
+
+
+def _parse_time_remaining(tr: str | None) -> tuple[int | None, int | None]:
+    """
+    Returns (quarter, seconds_remaining_in_quarter) if parsable.
+    Expected formats include: '5:32 Q3', '12:00 Q4', '0.0 Q2'.
+    """
+    if tr is None:
+        return None, None
+    s = str(tr).strip().upper()
+    if not s:
+        return None, None
+    m = re.search(r"(\\d{1,2})[:.](\\d{1,2})\\s*Q(\\d)", s)
+    if not m:
+        return None, None
+    mm = int(m.group(1))
+    ss = int(m.group(2))
+    q = int(m.group(3))
+    return q, mm * 60 + ss
+
+
+def _minutes_remaining_from_time_remaining(tr: str | None) -> float | None:
+    q, sec = _parse_time_remaining(tr)
+    if q is None or sec is None:
+        return None
+    mins_in_current = float(sec) / 60.0
+    quarters_left_after = max(0, 4 - int(q))
+    return quarters_left_after * 12.0 + mins_in_current
+
+
+def _live_weight_a(minutes_remaining: float | None) -> float:
+    """
+    a(t) = 1 - (t mins remaining)/48, clamped to [0, 1]
+    """
+    if minutes_remaining is None:
+        return 0.0
+    try:
+        t = float(minutes_remaining)
+    except Exception:
+        return 0.0
+    a = 1.0 - (t / 48.0)
+    return float(max(0.0, min(1.0, a)))
+
+
+def _close_spread_store_path() -> str:
+    return os.getenv(
+        "NBA_WATCH_CLOSE_SPREAD_STORE",
+        os.path.join("output", "state", "close_spreads.json"),
+    )
+
+
+def _load_close_spread_store(path: str) -> dict[str, float]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, float] = {}
+        for k, v in data.items():
+            try:
+                if k is None:
+                    continue
+                out[str(k)] = float(v)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return {}
+
+
+def _save_close_spread_store(path: str, data: dict[str, float]) -> None:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, sort_keys=True)
+        os.replace(tmp, path)
+    except Exception:
+        return
 
 
 def _normalize_status_for_display(status: str | None) -> str:
@@ -264,26 +344,28 @@ def _load_espn_league_injuries_by_team(*, ttl_seconds: int = 10 * 60) -> dict[st
 
 def _load_espn_game_summary_maps(
     game_ids: list[str],
-) -> tuple[dict[str, dict[str, dict[str, str]]], dict[str, str]]:
+) -> tuple[dict[str, dict[str, dict[str, str]]], dict[str, str], dict[str, float]]:
     """
     Returns:
       - injury_reports: game_id -> team_key -> athlete_id -> status
       - watch_providers: game_id -> simplified provider label (ESPN/Peacock/Prime/League Pass)
+      - close_spreads: game_id -> home_spread_close (float)
 
     Uses ESPN's game summary endpoint (cached on disk):
       https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=<GAME_ID>
     """
     injury_reports: dict[str, dict[str, dict[str, str]]] = {}
     watch_providers: dict[str, str] = {}
+    close_spreads: dict[str, float] = {}
     url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
 
     ids = [str(g).strip() for g in game_ids if str(g).strip()]
     if not ids:
-        return injury_reports, watch_providers
+        return injury_reports, watch_providers, close_spreads
 
     max_workers = int(os.getenv("NBA_WATCH_SUMMARY_WORKERS", "8"))
 
-    def _fetch_one(gid_s: str) -> tuple[str, dict[str, dict[str, str]] | None, str]:
+    def _fetch_one(gid_s: str) -> tuple[str, dict[str, dict[str, str]] | None, str, float | None]:
         try:
             resp = get_json_cached(
                 url,
@@ -295,16 +377,21 @@ def _load_espn_game_summary_maps(
             )
             data = resp.data
         except Exception:
-            return gid_s, None, "League Pass"
+            return gid_s, None, "League Pass", None
 
         if not isinstance(data, dict):
-            return gid_s, {}, "League Pass"
+            return gid_s, {}, "League Pass", None
 
         provider = _map_watch_provider_label(_extract_espn_broadcast_media_names(data))
+        close = None
+        try:
+            close = extract_closing_spreads(data).get("home_spread_close")
+        except Exception:
+            close = None
 
         injuries = data.get("injuries")
         if not isinstance(injuries, list):
-            return gid_s, {}, provider
+            return gid_s, {}, provider, close
 
         by_team: dict[str, dict[str, str]] = {}
         for block in injuries:
@@ -349,19 +436,24 @@ def _load_espn_game_summary_maps(
                 m[athlete_id] = chosen
             by_team[team_key] = m
 
-        return gid_s, by_team, provider
+        return gid_s, by_team, provider, close
 
     # Parallelize per-game summary fetches; this is the biggest cold-load hotspot.
     with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [ex.submit(_fetch_one, gid) for gid in ids]
         for fut in cf.as_completed(futures):
-            gid_s, by_team, provider = fut.result()
+            gid_s, by_team, provider, close = fut.result()
             watch_providers[gid_s] = provider
+            if close is not None:
+                try:
+                    close_spreads[gid_s] = float(close)
+                except Exception:
+                    pass
             if by_team is None:
                 continue
             injury_reports[gid_s] = by_team
 
-    return injury_reports, watch_providers
+    return injury_reports, watch_providers, close_spreads
 
 
 def _map_watch_provider_label(names: list[str]) -> str:
@@ -656,11 +748,89 @@ def build_watchability_df(
 
     df["Tip display"] = df.apply(_tip_display, axis=1)
 
+    # --- Close-spread freezing + live blending (Odds API) ---
+    # We treat Odds API "Home spread" as the current spread signal (often updates live).
+    # For the "close spread", prefer ESPN's summary close spread when available because it can be fetched
+    # even if the app wasn't loaded pre-tip. If missing, fall back to freezing the last pre-game Odds API
+    # "Home spread" observed to a small local store.
+    store_path = _close_spread_store_path()
+    close_store = _load_close_spread_store(store_path)
+    store_changed = False
+
+    def _gid(r) -> str:
+        return str(r.get("ESPN game id") or "").strip()
+
+    def _is_pre(r) -> bool:
+        return str(r.get("Status") or "").lower() == "pre"
+
+    for _, r in df.iterrows():
+        gid = _gid(r)
+        if not gid:
+            continue
+        if not _is_pre(r):
+            continue
+        s = r.get("Home spread")
+        if s is None:
+            continue
+        try:
+            close_store[gid] = float(s)
+            store_changed = True
+        except Exception:
+            continue
+
+    if store_changed:
+        _save_close_spread_store(store_path, close_store)
+
+    def _close_spread_row(r) -> float | None:
+        gid = _gid(r)
+        cur = r.get("Home spread")
+        if gid and gid in close_spreads_espn:
+            try:
+                return float(close_spreads_espn[gid])
+            except Exception:
+                pass
+        if not gid:
+            return None if cur is None else float(cur)
+        v = close_store.get(gid)
+        if v is None:
+            return None if cur is None else float(cur)
+        return float(v)
+
+    df["Home spread close"] = df.apply(_close_spread_row, axis=1)
+    df["Minutes remaining"] = df["Time remaining"].apply(_minutes_remaining_from_time_remaining)
+    df["a(t)"] = df["Minutes remaining"].apply(_live_weight_a)
+
+    def _effective_spread_row(r) -> float | None:
+        cur = r.get("Home spread")
+        close = r.get("Home spread close")
+        if cur is None:
+            return None
+        try:
+            cur_f = float(cur)
+        except Exception:
+            return None
+        if str(r.get("Status") or "").lower() != "in":
+            return cur_f
+        if close is None:
+            return cur_f
+        try:
+            close_f = float(close)
+        except Exception:
+            close_f = cur_f
+        a = float(r.get("a(t)") or 0.0)
+        a = max(0.0, min(1.0, a))
+        return a * cur_f + (1.0 - a) * close_f
+
+    df["Home spread effective"] = df.apply(_effective_spread_row, axis=1)
+    df["|spread effective|"] = df["Home spread effective"].apply(lambda x: None if x is None else abs(float(x)))
+
     if not include_post:
         df = df[df["Status"] != "post"].copy()
 
     game_ids = sorted({str(x) for x in df["ESPN game id"].dropna().tolist() if str(x).strip()})
-    injury_reports, watch_providers = _load_espn_game_summary_maps(game_ids) if game_ids else ({}, {})
+    injury_reports, watch_providers, close_spreads_espn = (
+        _load_espn_game_summary_maps(game_ids) if game_ids else ({}, {}, {})
+    )
     league_injuries_by_team = _load_espn_league_injuries_by_team(ttl_seconds=5 * 60)
 
     # NBA.com game URLs (match by PT date + teams; teams play at most once per date).
@@ -1061,10 +1231,13 @@ def build_watchability_df(
     )
 
     def _compute_watchability_row(r) -> pd.Series:
+        abs_spread = r.get("|spread effective|")
+        if abs_spread is None:
+            abs_spread = r.get("|spread|")
         w = watch.compute_watchability(
             float(r["Adj win% (home)"]),
             float(r["Adj win% (away)"]),
-            r["|spread|"],
+            abs_spread,
         )
         return pd.Series(
             {
