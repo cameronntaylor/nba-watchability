@@ -498,24 +498,14 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
     def _rec_card(*, title: str, title_class: str, subtitle: str, row, extra_meta: str = "") -> str:
         tip_display = py_html.escape(_tip_pt_et(row) or str(row.get("Tip display") or row.get("Tip short") or ""))
         wi_score = int(round(float(row.get("aWI") or 0.0)))
-        is_live = bool(row.get("_is_live", False)) or str(row.get("_status") or "").lower() == "in"
-        live_line = ""
-        score_line = ""
-        if is_live:
-            tr = str(row.get("Time remaining") or "").strip()
-            live_line = f"🚨 LIVE {py_html.escape(tr)}" if tr else "🚨 LIVE"
-            away_s = _parse_score(row.get("Away score"))
-            home_s = _parse_score(row.get("Home score"))
-            if away_s is not None and home_s is not None:
-                score_line = f"{int(away_s)} - {int(home_s)}"
-        live_html = ""
-        if live_line:
-            live_html = f"<div class='rec-live'>{live_line}</div>"
-            if score_line:
-                live_html += f"<div class='rec-score'>{py_html.escape(score_line)}</div>"
-        chip = _chip(str(row.get("Where to watch URL") or ""), str(row.get("Where to watch provider") or "") or "League Pass")
+        chip = _chip(
+            str(row.get("Where to watch URL") or ""),
+            str(row.get("Where to watch provider") or "") or "League Pass",
+        )
         c_str, q_str = _subscores_row(row)
         spread_line = py_html.escape(_spread_str(row))
+
+        live_html = _live_score_html(row)
         return textwrap.dedent(
             f"""
             <div class="rec-card">
@@ -533,6 +523,65 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             {extra_meta}
             </div>
             </div>
+            </div>
+            """
+        ).strip()
+
+    def _live_score_html(row) -> str:
+        is_live = bool(row.get("_is_live", False)) or str(row.get("_status") or "").lower() == "in"
+        if not is_live:
+            return ""
+        live_line = ""
+        score_line = ""
+        tr = str(row.get("Time remaining") or "").strip()
+        live_line = f"🚨 LIVE {py_html.escape(tr)}" if tr else "🚨 LIVE"
+        away_s = _parse_score(row.get("Away score"))
+        home_s = _parse_score(row.get("Home score"))
+        if away_s is not None and home_s is not None:
+            score_line = f"{int(away_s)} - {int(home_s)}"
+
+        html = f"<div class='rec-live'>{live_line}</div>"
+        if score_line:
+            html += f"<div class='rec-score'>{py_html.escape(score_line)}</div>"
+        return html
+
+    def _rec_meta_block(row) -> str:
+        tip_display = py_html.escape(_tip_pt_et(row) or str(row.get("Tip display") or row.get("Tip short") or ""))
+        wi_score = int(round(float(row.get("aWI") or 0.0)))
+        c_str, q_str = _subscores_row(row)
+        spread_line = py_html.escape(_spread_str(row))
+        chip = _chip(
+            str(row.get("Where to watch URL") or ""),
+            str(row.get("Where to watch provider") or "") or "League Pass",
+        )
+        live_html = _live_score_html(row)
+        return textwrap.dedent(
+            f"""
+            <div class="rec-meta">
+              <div class="rec-wi">Watchability {wi_score}</div>
+              <div class="rec-wi">Competitiveness {py_html.escape(c_str)} · Team Quality {py_html.escape(q_str)}</div>
+              <div class="rec-wi">{tip_display}</div>
+              <div class="rec-wi">Spread: {spread_line}</div>
+              {live_html}
+              {chip}
+            </div>
+            """
+        ).strip()
+
+    def _rec_card_multi(*, title: str, title_class: str, subtitle: str, rows: list) -> str:
+        # rows: list of dataframe rows (Series-like)
+        inner_rows = "\n".join(
+            [
+                f"<div class=\"rec-row\">{_matchup_block(r)}{_rec_meta_block(r)}</div>"
+                for r in rows
+            ]
+        )
+        return textwrap.dedent(
+            f"""
+            <div class="rec-card">
+              <div class="rec-title {py_html.escape(title_class)}">{py_html.escape(title)}</div>
+              <div class="rec-sub">{py_html.escape(subtitle)}</div>
+              {inner_rows}
             </div>
             """
         ).strip()
@@ -568,15 +617,13 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             | (d.get("_status", "").astype(str).str.lower() == "in")
         ].copy()
         if not live_df.empty:
-            best_now = live_df.sort_values(["_w2wn_score", "aWI"], ascending=False).iloc[0]
-            cards.append(
-                _rec_card(
-                    title="What to watch now",
-                    title_class="now",
-                    subtitle="Watch LIVE:",
-                    row=best_now,
-                )
-            )
+            live_sorted = live_df.sort_values(["_w2wn_score", "aWI"], ascending=False).reset_index(drop=True)
+            rows = [live_sorted.iloc[0]]
+            if len(live_sorted) > 1:
+                r2 = live_sorted.iloc[1]
+                if float(r2.get("aWI") or 0.0) > 50.0:
+                    rows.append(r2)
+            cards.append(_rec_card_multi(title="What to watch now", title_class="now", subtitle="Watch LIVE:", rows=rows))
 
     # 2) Best upcoming game tonight
     upcoming = d[
@@ -586,8 +633,13 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         & (d["_minutes_to_tip"].astype(float) > 0)
     ].copy()
     if not upcoming.empty:
-        best_up = upcoming.sort_values(["aWI", "_minutes_to_tip"], ascending=[False, True]).iloc[0]
-        cards.append(_rec_card(title="Best upcoming game tonight", title_class="upcoming", subtitle="Up next:", row=best_up))
+        upcoming_sorted = upcoming.sort_values(["aWI", "_minutes_to_tip"], ascending=[False, True]).reset_index(drop=True)
+        rows = [upcoming_sorted.iloc[0]]
+        if len(upcoming_sorted) > 1:
+            r2 = upcoming_sorted.iloc[1]
+            if float(r2.get("aWI") or 0.0) > 50.0:
+                rows.append(r2)
+        cards.append(_rec_card_multi(title="Best upcoming tonight", title_class="upcoming", subtitle="", rows=rows))
 
     # 3) Best doubleheader tonight (disabled for now; keep infra).
     if ENABLE_DOUBLEHEADER_REC:
