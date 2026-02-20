@@ -26,9 +26,9 @@ CHART_BOTTOM_PAD = int(os.getenv("CHART_BOTTOM_PAD", "350"))
 
 # --- Table crop (tweak as needed) ---
 TABLE_LEFT_PAD = int(os.getenv("TABLE_LEFT_PAD", "2000"))
-TABLE_TOP_PAD = int(os.getenv("TABLE_TOP_PAD", "780"))
+TABLE_TOP_PAD = int(os.getenv("TABLE_TOP_PAD", "450"))
 TABLE_RIGHT_PAD = int(os.getenv("TABLE_RIGHT_PAD", "125"))
-TABLE_BOTTOM_PAD = int(os.getenv("TABLE_BOTTOM_PAD", "230"))
+TABLE_BOTTOM_PAD = int(os.getenv("TABLE_BOTTOM_PAD", "150"))
 
 
 def capture_dashboard():
