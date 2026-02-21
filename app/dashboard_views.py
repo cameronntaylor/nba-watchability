@@ -1799,10 +1799,10 @@ def render_full_dashboard(title: str, caption: str) -> None:
     st.title(title)
     info_text = (
         "How it works\n"
-        "• Competitiveness: based on the betting spread (smaller spread = closer game).\n"
-        "• Team quality: based on team strength, adjusted for key injuries.\n"
+        "• Input 1 - Competitiveness: based on the spread (smaller spread = more competitive game).\n"
+        "• Input 2 - Team quality: average of team winning percentages adjusted for key injuries based on players output.\n"
         "• Output: a single Watchability score + simple labels (Must Watch → Hard Skip).\n"
-        "• Updates live: watchability can change as the score stays close (or blows out)."
+        "• Updates live: watchability changes as the score changes."
     )
     info_attr = py_html.escape(info_text).replace("\n", "&#10;")
     cap_text = py_html.escape(caption)
