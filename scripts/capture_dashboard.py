@@ -28,7 +28,7 @@ CHART_BOTTOM_PAD = int(os.getenv("CHART_BOTTOM_PAD", "350"))
 TABLE_LEFT_PAD = int(os.getenv("TABLE_LEFT_PAD", "2000"))
 TABLE_TOP_PAD = int(os.getenv("TABLE_TOP_PAD", "450"))
 TABLE_RIGHT_PAD = int(os.getenv("TABLE_RIGHT_PAD", "125"))
-TABLE_BOTTOM_PAD = int(os.getenv("TABLE_BOTTOM_PAD", "150"))
+TABLE_BOTTOM_PAD = int(os.getenv("TABLE_BOTTOM_PAD", "550"))
 
 
 def capture_dashboard():
