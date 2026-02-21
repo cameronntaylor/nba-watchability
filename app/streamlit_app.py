@@ -16,8 +16,7 @@ st.set_page_config(page_title="NBA Watchability", layout="wide", initial_sidebar
 render_full_dashboard(
     title="NBA Watchability",
     caption=(
-        "NBA Watchability ranks tonight’s games by how worth watching they are, "
-        "using expected competitiveness and injury-adjusted team quality. "
+        "NBA Watchability ranks games and provides context to help you decide what to watch. "
         " "
         " "
     ),

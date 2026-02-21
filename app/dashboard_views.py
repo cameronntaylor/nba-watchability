@@ -129,7 +129,7 @@ div[data-testid="collapsedControl"] {display: none;}
 
 /* Recommendations module */
 .rec-wrap {margin-bottom: 10px;}
-.rec-head {font-size: 22px; font-weight: 950; color: rgba(49,51,63,0.90); letter-spacing: 0.2px; margin-bottom: 8px;}
+.rec-head {font-size: 22px; font-weight: 1000; color: rgba(0,0,0,0,0.9); letter-spacing: 0.2px; margin-bottom: 8px; margin-top: 68px;}
 .rec-card {border: 1px solid rgba(49,51,63,0.15); border-radius: 14px; padding: 12px 12px; background: rgba(255,255,255,0.92); box-shadow: 0 8px 22px rgba(0,0,0,0.06); margin-bottom: 10px;}
 .rec-title {font-size: 20px; font-weight: 900; color: rgba(49,51,63,0.90); line-height: 1.1;}
 .rec-title.now {color: rgba(214, 39, 40, 0.90);}   /* red tint */
@@ -1005,7 +1005,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             ).strip()
             cards.append(html)
 
-    header_html = "<div class='rec-wrap'><div class='rec-head'>Recommendations</div></div>"
+    header_html = "<div class='rec-wrap'><div class='rec-head'>What to Watch Recommendations</div></div>"
     inner = "\n".join([header_html] + cards)
     if wrapper_class:
         inner = f"<div class='{py_html.escape(wrapper_class)}'>{inner}</div>"
@@ -1184,6 +1184,15 @@ def render_chart(
     selected_date: str | None,
     default_day: str | None = None,
 ) -> str | None:
+    def _fmt_m_d_yy_from_iso(iso: str | None) -> str | None:
+        if not iso:
+            return None
+        try:
+            y, m, d = (int(x) for x in iso.split("-"))
+            return f"{m}/{d}/{str(y)[2:]}"
+        except Exception:
+            return None
+
     QUALITY_FLOOR = getattr(watch, "QUALITY_FLOOR", 0.1)
     CLOSENESS_FLOOR = getattr(watch, "CLOSENESS_FLOOR", 0.1)
 
@@ -1209,6 +1218,8 @@ def render_chart(
         else:
             selected = selected_date if selected_date in date_options else date_options[0]
         df_plot = df[df["Local date"].astype(str) == selected].copy()
+
+    chart_date_str = _fmt_m_d_yy_from_iso(selected)
 
     region_order = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
     region_colors = {
@@ -1275,7 +1286,7 @@ def render_chart(
 
     axes = alt.Chart(df_plot).mark_point(opacity=0).encode(
         x=alt.X(
-            "Team quality:Q",
+            "Team Quality:Q",
             scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]),
             axis=alt.Axis(
                 title="Team Quality",
@@ -1289,7 +1300,7 @@ def render_chart(
             ),
         ),
         y=alt.Y(
-            "Closeness:Q",
+            "Competitiveness:Q",
             scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]),
             axis=alt.Axis(
                 title="Competitiveness",
@@ -1308,16 +1319,16 @@ def render_chart(
     region_labels_df = pd.DataFrame(
         [
             {"label": "Must Watch", "x": 0.93, "y": 0.93},
-            {"label": "Strong Watch", "x": 0.80, "y": 0.82},
-            {"label": "Watchable", "x": 0.60, "y": 0.60},
+            {"label": "Strong", "x": 0.83, "y": 0.82},
+            {"label": "Watchable", "x": 0.64, "y": 0.60},
             {"label": "Skippable", "x": 0.40, "y": 0.40},
             {"label": "Hard Skip", "x": 0.20, "y": 0.20},
         ]
     )
     region_text = alt.Chart(region_labels_df).mark_text(
-        fontSize=28,
+        fontSize=24,
         fontWeight=700,
-        opacity=0.15,
+        opacity=0.2,
         color="rgba(49,51,63,0.75)",
     ).encode(
         x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
@@ -1326,12 +1337,13 @@ def render_chart(
         tooltip=[],
     )
 
-    x_axis_label_df = pd.DataFrame(
-        [{"text": "Team Quality", "x": 0.55, "y": CLOSENESS_FLOOR + 0.05}]
+    # X-axis overlay label: render as two separate text marks (more reliable than newline rendering).
+    x_axis_label_df_top = pd.DataFrame(
+        [{"text": "Quality of Teams", "x": 0.55, "y": CLOSENESS_FLOOR + 0.035}]
     )
-    x_axis_label_text = alt.Chart(x_axis_label_df).mark_text(
-        dy=78,
-        fontSize=22,
+    x_axis_label_top = alt.Chart(x_axis_label_df_top).mark_text(
+        dy=72,
+        fontSize=20,
         fontWeight=800,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
@@ -1342,12 +1354,31 @@ def render_chart(
         tooltip=[],
     )
 
-    y_axis_label_df = pd.DataFrame(
-        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.07, "y": 0.65}]
+    x_axis_label_df_bottom = pd.DataFrame(
+        [{"text": "(Avg Injury-Adjusted Winning Percentages)", "x": 0.55, "y": CLOSENESS_FLOOR + 0.035}]
     )
-    y_axis_label_text = alt.Chart(y_axis_label_df).mark_text(
+    x_axis_label_bottom = alt.Chart(x_axis_label_df_bottom).mark_text(
+        dy=92,
+        fontSize=13,
+        fontWeight=500,
+        opacity=0.95,
+        color="rgba(0,0,0,0.9)",
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("text:N"),
+        tooltip=[],
+    )
+
+    x_axis_label_text = x_axis_label_top + x_axis_label_bottom
+
+    y_axis_label_df_top = pd.DataFrame(
+        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.07, "y": 0.62}]
+    )
+
+    y_axis_label_text_top = alt.Chart(y_axis_label_df_top).mark_text(
         dx=-74,
-        fontSize=22,
+        fontSize=20,
         fontWeight=800,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
@@ -1358,6 +1389,26 @@ def render_chart(
         text=alt.Text("text:N"),
         tooltip=[],
     )
+
+    y_axis_label_df_bottom = pd.DataFrame(
+        [{"text": "(Absolute Spread)", "x": QUALITY_FLOOR - 0.07, "y": 0.905}]
+    )
+
+    y_axis_label_text_bottom = alt.Chart(y_axis_label_df_bottom).mark_text(
+        dx=-74,
+        fontSize=13,
+        fontWeight=500,
+        opacity=0.95,
+        color="rgba(0,0,0,0.9)",
+        angle=270,
+    ).encode(
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        text=alt.Text("text:N"),
+        tooltip=[], 
+    )
+
+    y_axis_label_text = y_axis_label_text_top + y_axis_label_text_bottom
 
     game_tooltip = [
         alt.Tooltip("Matchup:N"),
@@ -1376,8 +1427,8 @@ def render_chart(
     ]
 
     circles = alt.Chart(df_plot).mark_circle(size=800, opacity=0.10).encode(
-        x=alt.X("Team quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
-        y=alt.Y("Closeness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        x=alt.X("Team Quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("Competitiveness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         color=alt.Color(
             "Region:N",
             sort=region_order,
@@ -1388,8 +1439,8 @@ def render_chart(
     )
 
     hit_targets = alt.Chart(df_plot).mark_circle(size=4200, opacity=0.001).encode(
-        x=alt.X("Team quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
-        y=alt.Y("Closeness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        x=alt.X("Team Quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("Competitiveness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         tooltip=game_tooltip,
     )
 
@@ -1450,15 +1501,15 @@ def render_chart(
 
     chart_legend_df = pd.DataFrame(
         [
-            {"text": "↗ Better games (high quality + close)", "x": QUALITY_FLOOR + 0.01, "y": CLOSENESS_FLOOR + 0.08},
-            {"text": "↙ Less watchable", "x": QUALITY_FLOOR + 0.01, "y": CLOSENESS_FLOOR + 0.03},
+            {"text": "↗ More watchable", "x": QUALITY_FLOOR + 0.01, "y": CLOSENESS_FLOOR + 0.04},
+            #{"text": "↙ Less watchable", "x": QUALITY_FLOOR + 0.01, "y": CLOSENESS_FLOOR + 0.03},
         ]
     )
     chart_legend = alt.Chart(chart_legend_df).mark_text(
         align="left",
         baseline="top",
-        fontSize=12,
-        fontWeight=600,
+        fontSize=13,
+        fontWeight=700,
         color="rgba(49,51,63,0.70)",
         opacity=0.95,
     ).encode(
@@ -1479,7 +1530,17 @@ def render_chart(
         + images
         + tips
         + chart_legend
-    ).resolve_scale(x="shared", y="shared").properties(height=560)
+    ).resolve_scale(x="shared", y="shared").properties(
+        height=560,
+        title=alt.TitleParams(
+            text=["Watchability Landscape" + " " + chart_date_str] if chart_date_str else ["Watchability Landscape Today"],
+            anchor="middle",
+            fontSize=21,
+            fontWeight=800,
+            color="rgba(0,0,0,0.9)",
+            dy=4,
+        ),
+    )
     st.altair_chart(chart, use_container_width=True)
     return selected
 
@@ -1618,7 +1679,7 @@ def render_table(
     *,
     selected_day: str | None = None,
 ) -> None:
-    sort_mode = st.segmented_control("Sort", options=["Watchability", "Tip time"], default="Watchability")
+    sort_mode = st.segmented_control("Sort ↓", options=["Watchability", "Tip time"], default="Watchability")
     sort_mode = sort_mode or "Watchability"
     today_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles")).date()
 
@@ -1749,10 +1810,10 @@ def render_full_dashboard(title: str, caption: str) -> None:
     st.title(title)
     info_text = (
         "How it works\n"
-        "• Competitiveness: based on the betting spread (smaller spread = closer game).\n"
-        "• Team quality: based on team strength, adjusted for key injuries.\n"
+        "• Input 1 - Competitiveness: based on the spread (smaller spread = more competitive game).\n"
+        "• Input 2 - Team quality: average of team winning percentages adjusted for key injuries based on players output.\n"
         "• Output: a single Watchability score + simple labels (Must Watch → Hard Skip).\n"
-        "• Updates live: watchability can change as the score stays close (or blows out)."
+        "• Updates live: watchability changes as the score changes."
     )
     info_attr = py_html.escape(info_text).replace("\n", "&#10;")
     cap_text = py_html.escape(caption)
@@ -1802,8 +1863,8 @@ def render_full_dashboard(title: str, caption: str) -> None:
         render_recommendations_module(df, slate_day=selected, wrapper_class="recs-mobile")
     with right:
         render_recommendations_module(df, slate_day=selected, wrapper_class="recs-desktop")
-        st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games</div>", unsafe_allow_html=True)
-        st.divider()
+        st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games Today</div>", unsafe_allow_html=True)
+        #st.divider()
         render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=selected)
 
     # Hidden machine-readable metadata so the bot can align tweet text
