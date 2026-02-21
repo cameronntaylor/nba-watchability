@@ -1184,6 +1184,15 @@ def render_chart(
     selected_date: str | None,
     default_day: str | None = None,
 ) -> str | None:
+    def _fmt_m_d_yy_from_iso(iso: str | None) -> str | None:
+        if not iso:
+            return None
+        try:
+            y, m, d = (int(x) for x in iso.split("-"))
+            return f"{m}/{d}/{str(y)[2:]}"
+        except Exception:
+            return None
+
     QUALITY_FLOOR = getattr(watch, "QUALITY_FLOOR", 0.1)
     CLOSENESS_FLOOR = getattr(watch, "CLOSENESS_FLOOR", 0.1)
 
@@ -1209,6 +1218,8 @@ def render_chart(
         else:
             selected = selected_date if selected_date in date_options else date_options[0]
         df_plot = df[df["Local date"].astype(str) == selected].copy()
+
+    chart_date_str = _fmt_m_d_yy_from_iso(selected)
 
     region_order = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
     region_colors = {
@@ -1522,9 +1533,9 @@ def render_chart(
     ).resolve_scale(x="shared", y="shared").properties(
         height=560,
         title=alt.TitleParams(
-            text=["Watchability Landscape Today"],
+            text=["Watchability Landscape" + " " + chart_date_str] if chart_date_str else ["Watchability Landscape Today"],
             anchor="middle",
-            fontSize=22,
+            fontSize=21,
             fontWeight=800,
             color="rgba(0,0,0,0.9)",
             dy=4,
