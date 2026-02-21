@@ -52,7 +52,7 @@ def _parse_time_remaining(tr: str | None) -> tuple[int | None, int | None]:
     s = str(tr).strip().upper()
     if not s:
         return None, None
-    m = re.search(r"(\\d{1,2})[:.](\\d{1,2})\\s*Q(\\d)", s)
+    m = re.search(r"(\d{1,2})[:.](\d{1,2})\s*Q(\d)", s)
     if not m:
         return None, None
     mm = int(m.group(1))
@@ -70,9 +70,13 @@ def _minutes_remaining_from_time_remaining(tr: str | None) -> float | None:
     return quarters_left_after * 12.0 + mins_in_current
 
 
-def _live_weight_a(minutes_remaining: float | None) -> float:
+def _close_weight_a(minutes_remaining: float | None) -> float:
     """
-    a(t) = 1 - (t mins remaining)/48, clamped to [0, 1]
+    Weight on the pre-game/closing spread while live:
+
+      a_close(t) = (t mins remaining) / 48, clamped to [0, 1]
+
+    This decreases over time, increasing the weight on the current/live Odds API spread.
     """
     if minutes_remaining is None:
         return 0.0
@@ -80,7 +84,7 @@ def _live_weight_a(minutes_remaining: float | None) -> float:
         t = float(minutes_remaining)
     except Exception:
         return 0.0
-    a = 1.0 - (t / 48.0)
+    a = t / 48.0
     return float(max(0.0, min(1.0, a)))
 
 
@@ -807,7 +811,8 @@ def build_watchability_df(
 
     df["Home spread close"] = df.apply(_close_spread_row, axis=1)
     df["Minutes remaining"] = df["Time remaining"].apply(_minutes_remaining_from_time_remaining)
-    df["a(t)"] = df["Minutes remaining"].apply(_live_weight_a)
+    df["a_close(t)"] = df["Minutes remaining"].apply(_close_weight_a)
+    df["a_live(t)"] = df["a_close(t)"].apply(lambda x: 1.0 - float(x) if x is not None else 0.0)
 
     def _effective_spread_row(r) -> float | None:
         cur = r.get("Home spread")
@@ -826,9 +831,10 @@ def build_watchability_df(
             close_f = float(close)
         except Exception:
             close_f = cur_f
-        a = float(r.get("a(t)") or 0.0)
-        a = max(0.0, min(1.0, a))
-        return a * cur_f + (1.0 - a) * close_f
+        a_close = float(r.get("a_close(t)") or 0.0)
+        a_close = max(0.0, min(1.0, a_close))
+        # Effective spread = a_close * closing_spread + (1-a_close) * live_spread
+        return a_close * close_f + (1.0 - a_close) * cur_f
 
     df["Home spread effective"] = df.apply(_effective_spread_row, axis=1)
     df["|spread effective|"] = df["Home spread effective"].apply(lambda x: None if x is None else abs(float(x)))
