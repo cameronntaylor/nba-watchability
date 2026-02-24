@@ -1221,6 +1221,22 @@ def render_chart(
 
     chart_date_str = _fmt_m_d_yy_from_iso(selected)
 
+    # Responsive sizing: keep mobile optimized, slightly larger on desktop web.
+    # Vega-Lite exposes a `width` signal we can use to scale mark sizes.
+    logo_size = alt.ExprRef(expr="clamp(width*0.06, 40, 50)")  # 40px on mobile, up to ~+24% on desktop
+    tip_font_size = alt.ExprRef(expr="clamp(width*0.018, 11, 14)")
+    region_label_font_size = alt.ExprRef(expr="clamp(width*0.040, 24, 30)")
+    legend_font_size = alt.ExprRef(expr="clamp(width*0.020, 13, 16)")
+    circle_size = alt.ExprRef(expr="clamp(width*1.2, 800, 992)")
+    hit_target_size = alt.ExprRef(expr="clamp(width*6.3, 4200, 5208)")
+    tips_dy = alt.ExprRef(expr="clamp(width*0.050, 32, 40)")
+    axis_label_font_size = alt.ExprRef(expr="clamp(width*0.030, 20, 25)")
+    axis_sublabel_font_size = alt.ExprRef(expr="clamp(width*0.020, 13, 16)")
+    axis_label_dx = alt.ExprRef(expr="clamp(width*-0.110, -74, -90)")
+    x_axis_title_dy = alt.ExprRef(expr="clamp(width*0.110, 72, 90)")
+    x_axis_subtitle_dy = alt.ExprRef(expr="clamp(width*0.140, 92, 115)")
+    chart_title_font_size = alt.ExprRef(expr="clamp(width*0.033, 21, 26)")
+
     region_order = ["Must Watch", "Strong Watch", "Watchable", "Skippable", "Hard Skip"]
     region_colors = {
         "Must Watch": "#1f77b4",
@@ -1326,7 +1342,7 @@ def render_chart(
         ]
     )
     region_text = alt.Chart(region_labels_df).mark_text(
-        fontSize=24,
+        fontSize=region_label_font_size,
         fontWeight=700,
         opacity=0.2,
         color="rgba(49,51,63,0.75)",
@@ -1342,8 +1358,8 @@ def render_chart(
         [{"text": "Quality of Teams", "x": 0.55, "y": CLOSENESS_FLOOR + 0.035}]
     )
     x_axis_label_top = alt.Chart(x_axis_label_df_top).mark_text(
-        dy=72,
-        fontSize=20,
+        dy=x_axis_title_dy,
+        fontSize=axis_label_font_size,
         fontWeight=800,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
@@ -1358,8 +1374,8 @@ def render_chart(
         [{"text": "(Avg Injury-Adjusted Winning Percentages)", "x": 0.55, "y": CLOSENESS_FLOOR + 0.035}]
     )
     x_axis_label_bottom = alt.Chart(x_axis_label_df_bottom).mark_text(
-        dy=92,
-        fontSize=13,
+        dy=x_axis_subtitle_dy,
+        fontSize=axis_sublabel_font_size,
         fontWeight=500,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
@@ -1377,8 +1393,8 @@ def render_chart(
     )
 
     y_axis_label_text_top = alt.Chart(y_axis_label_df_top).mark_text(
-        dx=-74,
-        fontSize=20,
+        dx=axis_label_dx,
+        fontSize=axis_label_font_size,
         fontWeight=800,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
@@ -1391,12 +1407,12 @@ def render_chart(
     )
 
     y_axis_label_df_bottom = pd.DataFrame(
-        [{"text": "(Absolute Spread)", "x": QUALITY_FLOOR - 0.07, "y": 0.905}]
+        [{"text": "(Absolute Spread)", "x": QUALITY_FLOOR - 0.07, "y": 0.915}]
     )
 
     y_axis_label_text_bottom = alt.Chart(y_axis_label_df_bottom).mark_text(
-        dx=-74,
-        fontSize=13,
+        dx=axis_label_dx,
+        fontSize=axis_sublabel_font_size,
         fontWeight=500,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
@@ -1426,7 +1442,7 @@ def render_chart(
         alt.Tooltip("Record (home):N"),
     ]
 
-    circles = alt.Chart(df_plot).mark_circle(size=800, opacity=0.10).encode(
+    circles = alt.Chart(df_plot).mark_circle(size=circle_size, opacity=0.10).encode(
         x=alt.X("Team Quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
         y=alt.Y("Competitiveness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         color=alt.Color(
@@ -1438,7 +1454,7 @@ def render_chart(
         tooltip=game_tooltip,
     )
 
-    hit_targets = alt.Chart(df_plot).mark_circle(size=4200, opacity=0.001).encode(
+    hit_targets = alt.Chart(df_plot).mark_circle(size=hit_target_size, opacity=0.001).encode(
         x=alt.X("Team Quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
         y=alt.Y("Competitiveness:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         tooltip=game_tooltip,
@@ -1485,14 +1501,18 @@ def render_chart(
     )
     images_df = images_df[images_df["_logo"].astype(bool)]
 
-    images = alt.Chart(images_df).mark_image(width=40, height=40).encode(
+    images = alt.Chart(images_df).mark_image(width=logo_size, height=logo_size).encode(
         x=alt.X("_x:Q", axis=None),
         y=alt.Y("Closeness:Q", axis=None),
         url=alt.Url("_logo:N"),
         tooltip=game_tooltip,
     )
 
-    tips = alt.Chart(df_plot).mark_text(dy=32, fontSize=11, color="rgba(49,51,63,0.75)").encode(
+    tips = alt.Chart(df_plot).mark_text(
+        dy=tips_dy,
+        fontSize=tip_font_size,
+        color="rgba(49,51,63,0.75)",
+    ).encode(
         x=alt.X("Team quality:Q", axis=None),
         y=alt.Y("Closeness:Q", axis=None),
         text=alt.Text("Tip display:N"),
@@ -1508,7 +1528,7 @@ def render_chart(
     chart_legend = alt.Chart(chart_legend_df).mark_text(
         align="left",
         baseline="top",
-        fontSize=13,
+        fontSize=legend_font_size,
         fontWeight=700,
         color="rgba(49,51,63,0.70)",
         opacity=0.95,
@@ -1535,7 +1555,7 @@ def render_chart(
         title=alt.TitleParams(
             text=["Watchability Landscape" + " " + chart_date_str] if chart_date_str else ["Watchability Landscape Today"],
             anchor="middle",
-            fontSize=21,
+            fontSize=chart_title_font_size,
             fontWeight=800,
             color="rgba(0,0,0,0.9)",
             dy=4,
