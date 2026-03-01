@@ -24,13 +24,105 @@ from core.health_espn import compute_team_player_impacts, injury_weight
 from core.importance import compute_importance_detail_map
 from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
 from core.build_watchability_df import build_watchability_df
+from core.build_watchability_forecast_df import build_watchability_forecast_df
 
 import core.watchability as watch
 
 
-@st.cache_data(ttl=60 * 5)  # 5 min (odds + injuries)
-def load_watchability_df(days_ahead: int = 2) -> pd.DataFrame:
+def _merge_live_and_forecast_df(live_df: pd.DataFrame, forecast_df: pd.DataFrame) -> pd.DataFrame:
+    if live_df is None or live_df.empty:
+        return forecast_df.copy() if forecast_df is not None else pd.DataFrame()
+    if forecast_df is None or forecast_df.empty:
+        return live_df.copy()
+
+    live = live_df.copy()
+    fc = forecast_df.copy()
+
+    def _key_cols(df: pd.DataFrame) -> pd.Series:
+        return (
+            df.get("Local date", pd.Series(index=df.index, dtype=object)).astype(str)
+            + "|"
+            + df.get("Home team", pd.Series(index=df.index, dtype=object)).astype(str).map(_normalize_team_name)
+            + "|"
+            + df.get("Away team", pd.Series(index=df.index, dtype=object)).astype(str).map(_normalize_team_name)
+        )
+
+    live["_merge_key"] = _key_cols(live)
+    fc["_merge_key"] = _key_cols(fc)
+    live_keys = set(live["_merge_key"].dropna().tolist())
+
+    # Odds/live rows always win. Keep forecast only for games not present in live dataframe.
+    fc_keep = fc[~fc["_merge_key"].isin(live_keys)].copy()
+
+    # Align columns safely.
+    for c in live.columns:
+        if c not in fc_keep.columns:
+            fc_keep[c] = None
+    for c in fc_keep.columns:
+        if c not in live.columns:
+            live[c] = None
+
+    out = pd.concat([live, fc_keep[live.columns]], ignore_index=True)
+    if "_merge_key" in out.columns:
+        out = out.drop(columns=["_merge_key"], errors="ignore")
+    if "Tip dt (PT)" in out.columns:
+        out = out.sort_values(["Local date", "Tip dt (PT)", "aWI"], ascending=[True, True, False], na_position="last")
+    else:
+        out = out.sort_values(["Local date", "aWI"], ascending=[True, False], na_position="last")
+    return out.reset_index(drop=True)
+
+
+def _normalize_dashboard_df_types(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    d = df.copy()
+    if "Local date" in d.columns:
+        try:
+            d["Local date"] = pd.to_datetime(d["Local date"], errors="coerce").dt.date
+        except Exception:
+            pass
+    for c in ["Tip dt (PT)", "Tip dt (ET)", "Tip dt (UTC)"]:
+        if c in d.columns:
+            try:
+                d[c] = pd.to_datetime(d[c], errors="coerce")
+            except Exception:
+                continue
+    if "Team Quality" not in d.columns and "Team quality" in d.columns:
+        d["Team Quality"] = d["Team quality"]
+    if "Competitiveness" not in d.columns and "Closeness" in d.columns:
+        d["Competitiveness"] = d["Closeness"]
+    return d
+
+
+@st.cache_data(ttl=60 * 5)  # 5 min for today's live/odds data
+def _load_live_watchability_df(days_ahead: int = 7) -> pd.DataFrame:
     return build_watchability_df(days_ahead=days_ahead)
+
+
+@st.cache_data(ttl=60 * 60)  # 1h for 7d forecast supplement
+def _load_forecast_watchability_df(days_ahead: int = 7) -> pd.DataFrame:
+    # Try committed artifact first for speed/stability, then fallback to local build.
+    p_parquet = os.path.join("data", "forecast", "latest.parquet")
+    p_csv = os.path.join("data", "forecast", "latest.csv")
+    try:
+        if os.path.exists(p_parquet):
+            return pd.read_parquet(p_parquet)
+    except Exception:
+        pass
+    try:
+        if os.path.exists(p_csv):
+            return pd.read_csv(p_csv)
+    except Exception:
+        pass
+    return build_watchability_forecast_df(days_ahead=days_ahead)
+
+
+@st.cache_data(ttl=60 * 5)  # combined view refresh cadence
+def load_watchability_df(days_ahead: int = 7) -> pd.DataFrame:
+    live = _load_live_watchability_df(days_ahead=days_ahead)
+    forecast = _load_forecast_watchability_df(days_ahead=days_ahead)
+    out = _merge_live_and_forecast_df(live, forecast)
+    return _normalize_dashboard_df_types(out)
 
 
 def inject_base_css() -> None:
@@ -183,6 +275,10 @@ div[data-testid="collapsedControl"] {display: none;}
 .rec-tip {font-weight: 850; color: rgba(49,51,63,0.82);}
 .rec-menu-row {padding-top: 10px; padding-bottom: 10px;}
 .rec-menu-row + .rec-menu-row {border-top: 1px solid rgba(49,51,63,0.12);}
+.day-rank-row {padding: 10px 0;}
+.day-rank-row + .day-rank-row {border-top: 1px solid rgba(49,51,63,0.12);}
+.day-rank-day {font-size: 15px; font-weight: 850; color: rgba(0,0,0,0.88); line-height: 1.2;}
+.day-rank-count {margin-top: 2px; font-size: 13px; font-weight: 700; color: rgba(49,51,63,0.72); line-height: 1.2;}
 /* Small "info" hover icon next to the dashboard caption. */
 .info-icon {display:inline-flex; align-items:center; justify-content:center; width: 22px; height: 22px; border-radius: 999px; border: 1px solid rgba(49,51,63,0.25); color: rgba(49,51,63,0.8); font-size: 13px; font-weight: 700;}
 .info-icon[data-tooltip] {cursor: pointer; position: relative;}
@@ -228,11 +324,57 @@ div[data-testid="collapsedControl"] {display: none;}
   .menu-matchup .name-short {display: inline;}
   .rec-teamline .name-full {display: none;}
   .rec-teamline .name-short {display: inline;}
+  .day-rank-day {font-size: 14px;}
+  .day-rank-count {font-size: 12px;}
 }
 
 /* On mobile, show Recommendations above the All Games menu. */
 .recs-mobile {display: none;}
 .recs-desktop {display: block;}
+
+/* Day selector chips */
+[data-testid="stSegmentedControl"] > label {margin-bottom: 0.25rem;}
+[data-testid="stSegmentedControl"] [role="radiogroup"] {
+  gap: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(49, 51, 63, 0.18);
+  width: fit-content;
+  background: rgba(255, 255, 255, 0.96);
+}
+[data-testid="stSegmentedControl"] [role="radiogroup"] label {
+  min-height: 36px;
+  padding: 0 18px;
+  border: 0;
+  border-right: 1px solid rgba(49, 51, 63, 0.18);
+  border-radius: 0;
+  background: transparent;
+}
+[data-testid="stSegmentedControl"] [role="radiogroup"] label:last-child {
+  border-right: 0;
+}
+[data-testid="stSegmentedControl"] [role="radiogroup"] label p {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+[data-testid="stSegmentedControl"] [role="radiogroup"] label:has(input:checked) {
+  background: rgba(255, 75, 75, 0.08);
+}
+[data-testid="stSegmentedControl"] [role="radiogroup"] label:has(input:checked) p {
+  color: rgba(255, 75, 75, 0.96);
+}
+
+@media (max-width: 640px) {
+  [data-testid="stSegmentedControl"] [role="radiogroup"] label {
+    min-height: 34px;
+    padding: 0 14px;
+  }
+  [data-testid="stSegmentedControl"] [role="radiogroup"] label p {
+    font-size: 11px;
+  }
+}
+
 @media (max-width: 640px) {
   .recs-mobile {display: block;}
   .recs-desktop {display: none;}
@@ -320,6 +462,62 @@ def _parse_score(x):
         if x is None:
             return None
         return int(float(x))
+    except Exception:
+        return None
+
+
+def _is_forecast_spread_row(row) -> bool:
+    mode = str(row.get("Spread mode", "") or "").strip().lower()
+    src = str(row.get("Spread source", "") or "").strip().lower()
+    if mode == "forecast":
+        return True
+    if "forecast" in src:
+        return True
+    return bool(row.get("Forecast", False))
+
+
+def _round_spread_display_value(spread) -> float | None:
+    try:
+        if spread is None:
+            return None
+        if pd.isna(spread):
+            return None
+        return round(float(spread) * 2.0) / 2.0
+    except Exception:
+        return None
+
+
+def _spread_display_parts(row) -> tuple[str, str]:
+    spread = _round_spread_display_value(row.get("Home spread"))
+    home = str(row.get("Home team", "") or "")
+    home_abbr = get_team_abbr(home) or home[:3].upper()
+    label = "Forecasted Spread" if _is_forecast_spread_row(row) else "Spread"
+    if spread is None:
+        return label, "?"
+    s = f"{spread:+.1f}"
+    if s.endswith(".0"):
+        s = s[:-2]
+    return label, f"{home_abbr} {s}"
+
+
+def _to_valid_datetime(x) -> dt.datetime | None:
+    """
+    Normalize pandas/stdlib datetime-like values and guard against NaT.
+    """
+    if x is None:
+        return None
+    try:
+        if pd.isna(x):
+            return None
+    except Exception:
+        pass
+    if isinstance(x, dt.datetime):
+        return x
+    try:
+        t = pd.to_datetime(x, errors="coerce")
+        if pd.isna(t):
+            return None
+        return t.to_pydatetime() if hasattr(t, "to_pydatetime") else t
     except Exception:
         return None
 
@@ -413,6 +611,21 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
     if d is None or d.empty:
         return
 
+    selected_slate_date: dt.date | None = None
+    try:
+        if slate_day and len(str(slate_day)) == 10:
+            y, m, dd = (int(x) for x in str(slate_day).split("-"))
+            selected_slate_date = dt.date(y, m, dd)
+        elif "Local date" in d.columns and not d["Local date"].dropna().empty:
+            v = d["Local date"].dropna().iloc[0]
+            if isinstance(v, dt.date):
+                selected_slate_date = v
+    except Exception:
+        selected_slate_date = None
+
+    is_same_day_slate = bool(selected_slate_date) and selected_slate_date == now_pt.date()
+    is_future_slate = bool(selected_slate_date) and selected_slate_date > now_pt.date()
+
     # Recommendation feature flags (keep infra, but allow disabling specific cards).
     ENABLE_DOUBLEHEADER_REC = False
     ENABLE_SWITCH_BETWEEN_REC = False
@@ -421,8 +634,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
     d["_status"] = d.get("Status", "pre").astype(str) if "Status" in d.columns else "pre"
 
     def _minutes_to_tip_row(r) -> float | None:
-        dt_pt = r.get("Tip dt (PT)")
-        if isinstance(dt_pt, dt.datetime):
+        dt_pt = _to_valid_datetime(r.get("Tip dt (PT)"))
+        if dt_pt is not None:
             return (dt_pt - now_pt).total_seconds() / 60.0
         return None
 
@@ -431,8 +644,9 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
     today_pt = now_pt.date()
 
     def _is_today_pt_tip(x) -> bool:
-        if isinstance(x, dt.datetime):
-            return x.date() == today_pt
+        t = _to_valid_datetime(x)
+        if t is not None:
+            return t.date() == today_pt
         return False
 
     def _top_star_set(day_df: pd.DataFrame) -> set[str]:
@@ -517,11 +731,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         c_str = "—" if c_score is None else str(int(round(c_score)))
         return c_str, q_str
 
-    def _spread_str(r) -> str:
-        spread = r.get("Home spread")
-        home = str(r.get("Home team", "") or "")
-        home_abbr = get_team_abbr(home) or home[:3].upper()
-        return "?" if spread is None else f"{home_abbr} {float(spread):+g}"
+    def _spread_str(r) -> tuple[str, str]:
+        return _spread_display_parts(r)
 
     def _menu_like_row(row) -> str:
         awi_score = int(round(float(row.get("aWI") or 0.0)))
@@ -550,30 +761,16 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         away_short = py_html.escape(str(away_mascot))
         home_short = py_html.escape(str(home_mascot))
 
-        dt_pt = row.get("Tip dt (PT)")
-        dt_et = row.get("Tip dt (ET)")
-        if isinstance(dt_pt, dt.datetime) and isinstance(dt_et, dt.datetime):
-            dow = dt_pt.strftime("%a")
-            pt_time = (
-                dt_pt.strftime("%I:%M%p")
-                .replace(" 0", " ")
-                .replace("AM", "am")
-                .replace("PM", "pm")
-                .lstrip("0")
-            )
-            et_time = (
-                dt_et.strftime("%I:%M%p")
-                .replace("AM", "am")
-                .replace("PM", "pm")
-                .lstrip("0")
-            )
-            tip_line = f"Tip {dow} {pt_time} PT / {et_time} ET"
+        tip_text = _tip_pt_et(row)
+        if tip_text:
+            tip_line = f"Tip {tip_text}"
         else:
-            tip_line = str(row.get("Tip (PT)", "Unknown"))
-            tip_line = f"Tip {tip_line}"
+            tip_line = "Tip Unknown"
         tip_line = py_html.escape(tip_line)
 
-        spread_str = py_html.escape(_spread_str(row))
+        spread_label, spread_value = _spread_str(row)
+        spread_str = py_html.escape(spread_value)
+        spread_label = py_html.escape(spread_label)
 
         where_url = str(row.get("Where to watch URL", "") or "").strip()
         where_html = ""
@@ -646,7 +843,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             f"</div>"
             f"<div class='menu-meta'>"
             f"<div class='rec-tip'>{tip_line}</div>"
-            f"<div>Spread: {spread_str}</div>"
+            f"<div>{spread_label}: {spread_str}</div>"
             f"{where_html}"
             f"</div>"
             f"</div>"
@@ -701,31 +898,75 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         )
 
     def _tip_pt_et(row) -> str:
-        dt_pt = row.get("Tip dt (PT)")
-        dt_et = row.get("Tip dt (ET)")
-        if isinstance(dt_pt, dt.datetime) and isinstance(dt_et, dt.datetime):
+        pt_tz = tz.gettz("America/Los_Angeles")
+        et_tz = tz.gettz("America/New_York")
+
+        def _fmt_clock(x: dt.datetime) -> str:
+            return (
+                x.strftime("%I:%M%p")
+                .replace("AM", "am")
+                .replace("PM", "pm")
+                .lstrip("0")
+            )
+
+        dt_pt = _to_valid_datetime(row.get("Tip dt (PT)"))
+        dt_et = _to_valid_datetime(row.get("Tip dt (ET)"))
+        if dt_pt is not None and dt_pt.tzinfo is None:
+            dt_pt = dt_pt.replace(tzinfo=pt_tz)
+        if dt_et is not None and dt_et.tzinfo is None:
+            dt_et = dt_et.replace(tzinfo=et_tz)
+        if dt_pt is not None and dt_et is None:
+            try:
+                dt_et = dt_pt.astimezone(et_tz)
+            except Exception:
+                dt_et = None
+        if dt_pt is not None and dt_et is not None:
             dow = dt_pt.strftime("%a")
-            pt_time = (
-                dt_pt.strftime("%I:%M%p")
-                .replace(" 0", " ")
-                .replace("AM", "am")
-                .replace("PM", "pm")
-                .lstrip("0")
-            )
-            et_time = (
-                dt_et.strftime("%I:%M%p")
-                .replace("AM", "am")
-                .replace("PM", "pm")
-                .lstrip("0")
-            )
+            pt_time = _fmt_clock(dt_pt)
+            et_time = _fmt_clock(dt_et)
             return f"{dow} {pt_time} PT / {et_time} ET"
+
         tip_pt = str(row.get("Tip (PT)") or row.get("Tip short") or row.get("Tip display") or "").strip()
         tip_et = str(row.get("Tip (ET)") or "").strip()
         if tip_pt and tip_et:
-            # tip_pt already has day/time; avoid repeating 'PT' if present.
-            pt = tip_pt if "PT" in tip_pt else f"{tip_pt} PT"
-            et = tip_et if "ET" in tip_et else f"{tip_et} ET"
+            # Avoid repeating the weekday in ET when both fields include it.
+            pt_clean = tip_pt.replace(" PT", "").replace("PT", "").strip()
+            et_clean = tip_et.replace(" ET", "").replace("ET", "").strip()
+            try:
+                pt_parts = pt_clean.split(" ", 1)
+                et_parts = et_clean.split(" ", 1)
+                if len(pt_parts) == 2 and len(et_parts) == 2 and pt_parts[0] == et_parts[0]:
+                    return f"{pt_clean} PT / {et_parts[1]} ET"
+            except Exception:
+                pass
+            pt = f"{pt_clean} PT"
+            et = f"{et_clean} ET"
             return f"{pt} / {et}"
+
+        if tip_pt:
+            try:
+                local_date = row.get("Local date")
+                if isinstance(local_date, dt.datetime):
+                    local_date = local_date.date()
+                tip_clean = (
+                    tip_pt.replace(" PT", "")
+                    .replace("PT", "")
+                    .replace(" ET", "")
+                    .replace("ET", "")
+                    .strip()
+                )
+                parsed = dtparser.parse(tip_clean, fuzzy=True, default=dt.datetime(2000, 1, 1, 0, 0))
+                if isinstance(local_date, dt.date):
+                    dt_pt_from_text = dt.datetime.combine(
+                        local_date,
+                        dt.time(parsed.hour, parsed.minute),
+                        tzinfo=pt_tz,
+                    )
+                    dt_et_from_text = dt_pt_from_text.astimezone(et_tz)
+                    return f"{dt_pt_from_text.strftime('%a')} {_fmt_clock(dt_pt_from_text)} PT / {_fmt_clock(dt_et_from_text)} ET"
+            except Exception:
+                pass
+
         return tip_pt
 
     def _rec_card(*, title: str, title_class: str, subtitle: str, row, extra_meta: str = "") -> str:
@@ -736,7 +977,9 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             str(row.get("Where to watch provider") or "") or "League Pass",
         )
         c_str, q_str = _subscores_row(row)
-        spread_line = py_html.escape(_spread_str(row))
+        spread_label, spread_value = _spread_str(row)
+        spread_line = py_html.escape(spread_value)
+        spread_label = py_html.escape(spread_label)
 
         live_html = _live_score_html(row)
         return textwrap.dedent(
@@ -750,7 +993,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             <div class="rec-wi">Watchability {wi_score}</div>
             <div class="rec-wi">Competitiveness {py_html.escape(c_str)} · Team Quality {py_html.escape(q_str)}</div>
             <div class="rec-wi">{tip_display}</div>
-            <div class="rec-wi">Spread: {spread_line}</div>
+            <div class="rec-wi">{spread_label}: {spread_line}</div>
             {live_html}
             {chip}
             {extra_meta}
@@ -782,7 +1025,9 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         tip_display = py_html.escape(_tip_pt_et(row) or str(row.get("Tip display") or row.get("Tip short") or ""))
         wi_score = int(round(float(row.get("aWI") or 0.0)))
         c_str, q_str = _subscores_row(row)
-        spread_line = py_html.escape(_spread_str(row))
+        spread_label, spread_value = _spread_str(row)
+        spread_line = py_html.escape(spread_value)
+        spread_label = py_html.escape(spread_label)
         chip = _chip(
             str(row.get("Where to watch URL") or ""),
             str(row.get("Where to watch provider") or "") or "League Pass",
@@ -794,7 +1039,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
               <div class="rec-wi">Watchability {wi_score}</div>
               <div class="rec-wi">Competitiveness {py_html.escape(c_str)} · Team Quality {py_html.escape(q_str)}</div>
               <div class="rec-wi">{tip_display}</div>
-              <div class="rec-wi">Spread: {spread_line}</div>
+              <div class="rec-wi">{spread_label}: {spread_line}</div>
               {live_html}
               {chip}
             </div>
@@ -814,22 +1059,35 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             """
         ).strip()
 
+    def _day_rank_card(*, title: str, subtitle: str, day_rows: list[dict[str, str]]) -> str:
+        inner_rows = []
+        for row in day_rows:
+            inner_rows.append(
+                textwrap.dedent(
+                    f"""
+                    <div class="day-rank-row">
+                      <div class="day-rank-day">{py_html.escape(str(row.get("day") or ""))}</div>
+                      <div class="day-rank-count">{py_html.escape(str(row.get("count") or ""))}</div>
+                    </div>
+                    """
+                ).strip()
+            )
+        return textwrap.dedent(
+            f"""
+            <div class="rec-card">
+              <div class="rec-title upcoming">{py_html.escape(title)}</div>
+              <div class="rec-sub">{py_html.escape(subtitle)}</div>
+              {' '.join(inner_rows)}
+            </div>
+            """
+        ).strip()
+
     cards: list[str] = []
 
     # 1) What to watch now
     show_w2wn = False
     try:
-        slate_date: dt.date | None = None
-        if slate_day and len(str(slate_day)) == 10:
-            y, m, dd = (int(x) for x in str(slate_day).split("-"))
-            slate_date = dt.date(y, m, dd)
-        elif "Local date" in d.columns and not d["Local date"].dropna().empty:
-            v = d["Local date"].dropna().iloc[0]
-            if isinstance(v, dt.date):
-                slate_date = v
-
-        is_same_day = bool(slate_date) and slate_date == now_pt.date()
-        if is_same_day:
+        if is_same_day_slate:
             # Only show when there is a live game.
             any_live = bool(
                 (d.get("_is_live", False) == True).any()  # noqa: E712
@@ -854,12 +1112,18 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             cards.append(_rec_card_multi(title="What to watch now", title_class="now", subtitle="Watch LIVE:", rows=rows))
 
     # 2) Best upcoming game tonight
-    upcoming = d[
-        (d["_status"].astype(str).str.lower() == "pre")
-        & (d.get("_is_live", False) == False)  # noqa: E712
-        & (d["_minutes_to_tip"].notna())
-        & (d["_minutes_to_tip"].astype(float) > 0)
-    ].copy()
+    if is_future_slate:
+        upcoming = d[
+            (d["_status"].astype(str).str.lower() == "pre")
+            & (d.get("_is_live", False) == False)  # noqa: E712
+        ].copy()
+    else:
+        upcoming = d[
+            (d["_status"].astype(str).str.lower() == "pre")
+            & (d.get("_is_live", False) == False)  # noqa: E712
+            & (d["_minutes_to_tip"].notna())
+            & (d["_minutes_to_tip"].astype(float) > 0)
+        ].copy()
     if not upcoming.empty:
         upcoming_sorted = upcoming.sort_values(["aWI", "_minutes_to_tip"], ascending=[False, True]).reset_index(drop=True)
         rows = [upcoming_sorted.iloc[0]]
@@ -872,6 +1136,79 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             if float(r3.get("aWI") or 0.0) > 50.0:
                 rows.append(r3)
         cards.append(_rec_card_multi(title="Best upcoming tonight", title_class="upcoming", subtitle="", rows=rows))
+
+    # 2b) Best games upcoming next 7 days (always use full df, not just selected slate).
+    full_upcoming = df.copy()
+    if full_upcoming is not None and not full_upcoming.empty:
+        if "Status" in full_upcoming.columns:
+            status_series = full_upcoming["Status"].astype(str).str.lower()
+        else:
+            status_series = pd.Series(["pre"] * len(full_upcoming), index=full_upcoming.index)
+        full_upcoming = full_upcoming[status_series == "pre"].copy()
+        if "Tip dt (PT)" in full_upcoming.columns:
+            full_upcoming = full_upcoming.sort_values(["aWI", "Tip dt (PT)"], ascending=[False, True])
+        else:
+            full_upcoming = full_upcoming.sort_values("aWI", ascending=False)
+        if not full_upcoming.empty:
+            top_rows = [full_upcoming.iloc[i] for i in range(min(3, len(full_upcoming)))]
+            cards.append(
+                _rec_card_multi(
+                    title="Best games upcoming next 7 days",
+                    title_class="upcoming",
+                    subtitle="Top Watchability picks",
+                    rows=top_rows,
+                )
+            )
+
+    # 2c) Best day of games upcoming next 7 days (rank all available days).
+    if df is not None and not df.empty and "Local date" in df.columns:
+        day_df = df.copy()
+        if "Status" in day_df.columns:
+            day_df = day_df[day_df["Status"].astype(str).str.lower() == "pre"].copy()
+        day_rank_rows: list[dict[str, str]] = []
+        if not day_df.empty:
+            grouped = (
+                day_df.dropna(subset=["Local date"])
+                .groupby("Local date", dropna=True)
+                .apply(
+                    lambda g: pd.Series(
+                        {
+                            "strong_count": int(g["Region"].isin(["Must Watch", "Strong Watch"]).sum()),
+                            "game_count": int(len(g)),
+                        }
+                    )
+                )
+                .reset_index()
+            )
+            if not grouped.empty:
+                grouped = grouped.sort_values(
+                    ["strong_count", "game_count", "Local date"],
+                    ascending=[False, False, True],
+                )
+                for _, gr in grouped.head(3).iterrows():
+                    d_local = gr.get("Local date")
+                    if isinstance(d_local, dt.date):
+                        day_label = f"{d_local.strftime('%a')} {d_local.month}/{d_local.day}"
+                    else:
+                        day_label = str(d_local)
+                    strong_count = int(gr.get("strong_count") or 0)
+                    game_count = int(gr.get("game_count") or 0)
+                    noun = "game" if strong_count == 1 else "games"
+                    day_rank_rows.append(
+                        {
+                            "label": "",
+                            "day": day_label,
+                            "count": f"{strong_count} Strong+ {noun}",
+                        }
+                    )
+        if day_rank_rows:
+            cards.append(
+                _day_rank_card(
+                    title="Best day of games upcoming next 7 days",
+                    subtitle="Ranked by Must Watch + Strong Watch games",
+                    day_rows=day_rank_rows,
+                )
+            )
 
     # 3) Best doubleheader tonight (disabled for now; keep infra).
     if ENABLE_DOUBLEHEADER_REC:
@@ -899,8 +1236,12 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             wi2 = int(round(float(g2.get("aWI") or 0.0)))
             c1, q1 = _subscores_row(g1)
             c2, q2 = _subscores_row(g2)
-            spread1 = py_html.escape(_spread_str(g1))
-            spread2 = py_html.escape(_spread_str(g2))
+            spread_label1, spread_value1 = _spread_str(g1)
+            spread_label2, spread_value2 = _spread_str(g2)
+            spread1 = py_html.escape(spread_value1)
+            spread2 = py_html.escape(spread_value2)
+            spread_label1 = py_html.escape(spread_label1)
+            spread_label2 = py_html.escape(spread_label2)
             chip1 = _chip(str(g1.get("Where to watch URL") or ""), str(g1.get("Where to watch provider") or "") or "League Pass")
             chip2 = _chip(str(g2.get("Where to watch URL") or ""), str(g2.get("Where to watch provider") or "") or "League Pass")
             html = textwrap.dedent(
@@ -915,7 +1256,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                     <div class="rec-wi">Watchability {wi1}</div>
                     <div class="rec-wi">Competitiveness {py_html.escape(c1)} · Team Quality {py_html.escape(q1)}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g1) or '') or tip1}</div>
-                    <div class="rec-wi">Spread: {spread1}</div>
+                    <div class="rec-wi">{spread_label1}: {spread1}</div>
                     {chip1}
                   </div>
                 </div>
@@ -925,7 +1266,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                     <div class="rec-wi">Watchability {wi2}</div>
                     <div class="rec-wi">Competitiveness {py_html.escape(c2)} · Team Quality {py_html.escape(q2)}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g2) or '') or tip2}</div>
-                    <div class="rec-wi">Spread: {spread2}</div>
+                    <div class="rec-wi">{spread_label2}: {spread2}</div>
                     {chip2}
                   </div>
                 </div>
@@ -964,8 +1305,12 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             wi2 = int(round(float(g2.get("aWI") or 0.0)))
             c1, q1 = _subscores_row(g1)
             c2, q2 = _subscores_row(g2)
-            spread1 = py_html.escape(_spread_str(g1))
-            spread2 = py_html.escape(_spread_str(g2))
+            spread_label1, spread_value1 = _spread_str(g1)
+            spread_label2, spread_value2 = _spread_str(g2)
+            spread1 = py_html.escape(spread_value1)
+            spread2 = py_html.escape(spread_value2)
+            spread_label1 = py_html.escape(spread_label1)
+            spread_label2 = py_html.escape(spread_label2)
             chip1 = _chip(
                 str(g1.get("Where to watch URL") or ""),
                 str(g1.get("Where to watch provider") or "") or "League Pass",
@@ -986,7 +1331,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                     <div class="rec-wi">Watchability {wi1}</div>
                     <div class="rec-wi">Competitiveness {py_html.escape(c1)} · Team Quality {py_html.escape(q1)}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g1) or '') or tip1}</div>
-                    <div class="rec-wi">Spread: {spread1}</div>
+                    <div class="rec-wi">{spread_label1}: {spread1}</div>
                     {chip1}
                   </div>
                 </div>
@@ -996,7 +1341,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                     <div class="rec-wi">Watchability {wi2}</div>
                     <div class="rec-wi">Competitiveness {py_html.escape(c2)} · Team Quality {py_html.escape(q2)}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g2) or '') or tip2}</div>
-                    <div class="rec-wi">Spread: {spread2}</div>
+                    <div class="rec-wi">{spread_label2}: {spread2}</div>
                     {chip2}
                   </div>
                 </div>
@@ -1004,6 +1349,19 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                 """
             ).strip()
             cards.append(html)
+
+    if not cards:
+        cards.append(
+            textwrap.dedent(
+                """
+                <div class="rec-card">
+                  <div class="rec-sub" style="font-size:16px; font-weight:700; color: rgba(49,51,63,0.72);">
+                    No live or upcoming recommendation for this slate yet.
+                  </div>
+                </div>
+                """
+            ).strip()
+        )
 
     header_html = "<div class='rec-wrap'><div class='rec-head'>What to Watch Recommendations</div></div>"
     inner = "\n".join([header_html] + cards)
@@ -1157,7 +1515,7 @@ def _fmt_m_d(d: dt.date) -> str:
 
 
 def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dict[str, str]]:
-    df = load_watchability_df(days_ahead=2)
+    df = load_watchability_df(days_ahead=7)
     if df.empty:
         return df, pd.DataFrame(columns=["Local date", "Day"]), [], {}
 
@@ -1169,8 +1527,8 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
     )
     date_options = [d.isoformat() for d in df_dates["Local date"].tolist()]
     date_to_label = {
-        d.isoformat(): f"{day} {_fmt_m_d(d)}"
-        for d, day in df_dates.itertuples(index=False, name=None)
+        d.isoformat(): f"{d.strftime('%a')} {_fmt_m_d(d)}"
+        for d, _day in df_dates.itertuples(index=False, name=None)
     }
 
     return df, df_dates, date_options, date_to_label
@@ -1197,6 +1555,10 @@ def render_chart(
     CLOSENESS_FLOOR = getattr(watch, "CLOSENESS_FLOOR", 0.1)
 
     df_plot = df.copy()
+    if "Team Quality" not in df_plot.columns and "Team quality" in df_plot.columns:
+        df_plot["Team Quality"] = df_plot["Team quality"]
+    if "Competitiveness" not in df_plot.columns and "Closeness" in df_plot.columns:
+        df_plot["Competitiveness"] = df_plot["Closeness"]
     if "Away Key Injuries" in df_plot.columns:
         df_plot["Away Key Injuries"] = df_plot["Away Key Injuries"].fillna("")
     if "Home Key Injuries" in df_plot.columns:
@@ -1388,50 +1750,51 @@ def render_chart(
 
     x_axis_label_text = x_axis_label_top + x_axis_label_bottom
 
-    y_axis_label_df_top = pd.DataFrame(
-        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.07, "y": 0.62}]
-    )
+    y_axis_label_df_top = pd.DataFrame([{"text": "Competitiveness"}])
 
     y_axis_label_text_top = alt.Chart(y_axis_label_df_top).mark_text(
-        dx=axis_label_dx,
         fontSize=axis_label_font_size,
         fontWeight=800,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
         angle=270,
     ).encode(
-        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
-        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        x=alt.value(34),
+        y=alt.value(355),
         text=alt.Text("text:N"),
         tooltip=[],
     )
 
-    y_axis_label_df_bottom = pd.DataFrame(
-        [{"text": "(Absolute Spread)", "x": QUALITY_FLOOR - 0.07, "y": 0.915}]
-    )
+    y_axis_label_df_bottom = pd.DataFrame([{"text": "(Absolute Spread)"}])
 
     y_axis_label_text_bottom = alt.Chart(y_axis_label_df_bottom).mark_text(
-        dx=axis_label_dx,
         fontSize=axis_sublabel_font_size,
         fontWeight=500,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
         angle=270,
     ).encode(
-        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
-        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
+        x=alt.value(62),
+        y=alt.value(240),
         text=alt.Text("text:N"),
-        tooltip=[], 
+        tooltip=[],
     )
 
     y_axis_label_text = y_axis_label_text_top + y_axis_label_text_bottom
+
+    df_plot = df_plot.copy()
+    def _spread_display_text_row(r) -> str:
+        lbl, val = _spread_display_parts(r)
+        return f"{lbl}: {val}"
+
+    df_plot["Spread display"] = df_plot.apply(_spread_display_text_row, axis=1)
 
     game_tooltip = [
         alt.Tooltip("Matchup:N"),
         alt.Tooltip("aWI:Q", title="Watchability", format=".1f"),
         alt.Tooltip("Region:N"),
         alt.Tooltip("Tip (PT):N"),
-        alt.Tooltip("Home spread:Q"),
+        alt.Tooltip("Spread display:N", title="Spread"),
         alt.Tooltip("Health (away):Q", title="Away health", format=".2f"),
         alt.Tooltip("Health (home):Q", title="Home health", format=".2f"),
         alt.Tooltip("Away Star Factor:N"),
@@ -1467,6 +1830,7 @@ def render_chart(
         "Matchup",
         "Tip short",
         "Tip (PT)",
+        "Spread display",
         "Home spread",
         "Record (away)",
         "Record (home)",
@@ -1599,8 +1963,8 @@ def _render_menu_row(r) -> str:
     home = py_html.escape(home_full)
     away_short = py_html.escape(str(away_mascot))
     home_short = py_html.escape(str(home_mascot))
-    dt_pt = r.get("Tip dt (PT)")
-    dt_et = r.get("Tip dt (ET)")
+    dt_pt = _to_valid_datetime(r.get("Tip dt (PT)"))
+    dt_et = _to_valid_datetime(r.get("Tip dt (ET)"))
     if dt_pt is not None and dt_et is not None:
         dow = dt_pt.strftime("%a")
         pt_time = dt_pt.strftime("%I:%M%p").replace(" 0", " ").replace("AM", "am").replace("PM", "pm").lstrip("0")
@@ -1618,9 +1982,9 @@ def _render_menu_row(r) -> str:
         where_html = (
             f"<div><span class='chip'><a href='{py_html.escape(where_url)}' target='_blank' rel='noopener noreferrer'>Where to watch: {py_html.escape(provider)}</a></span></div>"
         )
-    spread = r["Home spread"]
-    home_abbr = get_team_abbr(str(r.get("Home team", ""))) or str(r.get("Home team", ""))[:3].upper()
-    spread_str = "?" if spread is None else f"{home_abbr} {float(spread):+g}"
+    spread_label, spread_value = _spread_display_parts(r)
+    spread_str = py_html.escape(spread_value)
+    spread_label = py_html.escape(spread_label)
     record_away = py_html.escape(str(r.get("Record (away)", "—")))
     record_home = py_html.escape(str(r.get("Record (home)", "—")))
     health_away = r.get("Health (away)")
@@ -1686,7 +2050,7 @@ def _render_menu_row(r) -> str:
 </div>
 <div class="menu-meta">
 <div>{tip_line}</div>
-<div>Spread: {spread_str}</div>
+<div>{spread_label}: {spread_str}</div>
 {where_html}
 </div>
 </div>"""
@@ -1704,8 +2068,9 @@ def render_table(
     today_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles")).date()
 
     def _is_today_pt_tip(x) -> bool:
-        if isinstance(x, dt.datetime):
-            return x.date() == today_pt
+        t = _to_valid_datetime(x)
+        if t is not None:
+            return t.date() == today_pt
         return False
 
     def _top_star_sets(day_df: pd.DataFrame) -> tuple[set[str], set[str]]:

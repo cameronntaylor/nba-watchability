@@ -17,6 +17,7 @@ analysis/
 
 # Local testing
 run_local.sh
+run_local_w_forecast.sh
 
 # Output
 output/
