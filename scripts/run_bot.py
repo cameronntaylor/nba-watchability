@@ -13,11 +13,13 @@ def main():
         print("No games found / no tweet text generated; skipping tweet.")
         return
 
-    post_tweet(
+    posted = post_tweet(
         text=tweet_text,
         image_paths=image_paths,
         dry_run=DRY_RUN
     )
+    if not posted:
+        print("Tweet was not posted after retries. Continuing without failing the workflow.")
 
 if __name__ == "__main__":
     main()
