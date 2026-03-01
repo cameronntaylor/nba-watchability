@@ -19,7 +19,7 @@ def main():
         dry_run=DRY_RUN
     )
     if not posted:
-        print("Tweet was not posted after retries. Continuing without failing the workflow.")
+        raise RuntimeError("Tweet was not posted after retries.")
 
 if __name__ == "__main__":
     main()

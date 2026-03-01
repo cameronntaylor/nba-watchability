@@ -64,6 +64,7 @@ jobs:
             output/chart.png
             output/table.png
             output/tweet_meta.json
+            output/tweet_post_status.json
 
       - name: Upload daily logs artifact
         if: always()
