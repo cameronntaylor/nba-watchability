@@ -1155,7 +1155,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                 _rec_card_multi(
                     title="Best games upcoming next 7 days",
                     title_class="upcoming",
-                    subtitle="Top Watchability picks",
+                    subtitle="",
                     rows=top_rows,
                 )
             )
@@ -1167,6 +1167,20 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             day_df = day_df[day_df["Status"].astype(str).str.lower() == "pre"].copy()
         day_rank_rows: list[dict[str, str]] = []
         if not day_df.empty:
+            # If the first game of the current PT day has already started, exclude that day
+            # entirely from the "best upcoming days" ranking to avoid mixing "today" with
+            # still-upcoming future slates.
+            try:
+                if "Tip dt (PT)" in df.columns:
+                    today_rows = df[df["Local date"] == now_pt.date()].copy()
+                    today_tips = today_rows["Tip dt (PT)"].apply(_to_valid_datetime).dropna()
+                    if not today_tips.empty:
+                        earliest_today_tip = min(today_tips.tolist())
+                        if earliest_today_tip <= now_pt:
+                            day_df = day_df[day_df["Local date"] != now_pt.date()].copy()
+            except Exception:
+                pass
+
             grouped = (
                 day_df.dropna(subset=["Local date"])
                 .groupby("Local date", dropna=True)
@@ -1198,14 +1212,14 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                         {
                             "label": "",
                             "day": day_label,
-                            "count": f"{strong_count} Strong+ {noun}",
+                            "count": f"{strong_count} Strong+ {noun}, {game_count} total games",
                         }
                     )
         if day_rank_rows:
             cards.append(
                 _day_rank_card(
                     title="Best day of games upcoming next 7 days",
-                    subtitle="Ranked by Must Watch + Strong Watch games",
+                    subtitle="",
                     day_rows=day_rank_rows,
                 )
             )
@@ -1750,32 +1764,38 @@ def render_chart(
 
     x_axis_label_text = x_axis_label_top + x_axis_label_bottom
 
-    y_axis_label_df_top = pd.DataFrame([{"text": "Competitiveness"}])
+    y_axis_label_df_top = pd.DataFrame(
+        [{"text": "Competitiveness", "x": QUALITY_FLOOR - 0.07, "y": 0.605}]
+    )
 
     y_axis_label_text_top = alt.Chart(y_axis_label_df_top).mark_text(
+        dx=axis_label_dx,
         fontSize=axis_label_font_size,
         fontWeight=800,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
         angle=270,
     ).encode(
-        x=alt.value(34),
-        y=alt.value(355),
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         text=alt.Text("text:N"),
         tooltip=[],
     )
 
-    y_axis_label_df_bottom = pd.DataFrame([{"text": "(Absolute Spread)"}])
+    y_axis_label_df_bottom = pd.DataFrame(
+        [{"text": "(Absolute Spread)", "x": QUALITY_FLOOR - 0.07, "y": 0.93}]
+    )
 
     y_axis_label_text_bottom = alt.Chart(y_axis_label_df_bottom).mark_text(
+        dx=axis_label_dx,
         fontSize=axis_sublabel_font_size,
         fontWeight=500,
         opacity=0.95,
         color="rgba(0,0,0,0.9)",
         angle=270,
     ).encode(
-        x=alt.value(62),
-        y=alt.value(240),
+        x=alt.X("x:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
+        y=alt.Y("y:Q", scale=alt.Scale(domain=[CLOSENESS_FLOOR, 1.0]), axis=None),
         text=alt.Text("text:N"),
         tooltip=[],
     )
@@ -2246,11 +2266,10 @@ def render_full_dashboard(title: str, caption: str) -> None:
             default_day=default_day,
         )
         render_recommendations_module(df, slate_day=selected, wrapper_class="recs-mobile")
+        st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games Today</div>", unsafe_allow_html=True)
+        render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=selected)
     with right:
         render_recommendations_module(df, slate_day=selected, wrapper_class="recs-desktop")
-        st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games Today</div>", unsafe_allow_html=True)
-        #st.divider()
-        render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=selected)
 
     # Hidden machine-readable metadata so the bot can align tweet text
     # with the exact slate rendered on the deployed dashboard.
