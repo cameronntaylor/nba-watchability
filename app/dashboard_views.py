@@ -130,16 +130,15 @@ def _filter_displayable_dashboard_rows(df: pd.DataFrame) -> pd.DataFrame:
     if "Tip dt (PT)" in d.columns:
         tip_dt = pd.to_datetime(d["Tip dt (PT)"], errors="coerce")
         now_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles"))
-        is_today_tip = tip_dt.dt.date == now_pt.date()
         forecast_rows = (
             _coerce_bool_series(d["Forecast"], default=False)
             if "Forecast" in d.columns
             else pd.Series(False, index=d.index, dtype=bool)
         )
-        # Forecast rows are placeholders. Once today's tip has passed, hide them unless
-        # live data has taken over for that game.
-        stale_forecast = is_today_tip & forecast_rows & (~is_live) & (tip_dt <= now_pt)
-        keep &= ~stale_forecast.fillna(False)
+        # Forecast rows are placeholders only for pre-tip display. If their tip time has
+        # passed, hide them entirely and rely on the live dataframe for any active game.
+        expired_forecast = forecast_rows & tip_dt.notna() & (tip_dt <= now_pt)
+        keep &= ~expired_forecast.fillna(False)
 
     return d.loc[keep].reset_index(drop=True)
 
