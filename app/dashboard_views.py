@@ -94,6 +94,56 @@ def _normalize_dashboard_df_types(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
+def _coerce_bool_series(values, *, default: bool = False) -> pd.Series:
+    s = pd.Series(values).copy()
+    if s.empty:
+        return s.astype(bool)
+    if pd.api.types.is_bool_dtype(s):
+        return s.fillna(default)
+    normalized = s.astype(str).str.strip().str.lower()
+    truthy = {"1", "true", "t", "yes", "y"}
+    falsy = {"0", "false", "f", "no", "n", "", "none", "nan"}
+    out = pd.Series([default] * len(s), index=s.index, dtype=bool)
+    out.loc[normalized.isin(truthy)] = True
+    out.loc[normalized.isin(falsy)] = False
+    return out
+
+
+def _filter_displayable_dashboard_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    d = df.copy()
+    keep = pd.Series(True, index=d.index, dtype=bool)
+
+    if "Status" in d.columns:
+        status = d["Status"].astype(str).str.strip().str.lower()
+        keep &= status != "post"
+    else:
+        status = pd.Series("pre", index=d.index, dtype=object)
+
+    is_live = pd.Series(False, index=d.index, dtype=bool)
+    if "Is live" in d.columns:
+        is_live = _coerce_bool_series(d["Is live"], default=False)
+    is_live |= status == "in"
+
+    if "Tip dt (PT)" in d.columns:
+        tip_dt = pd.to_datetime(d["Tip dt (PT)"], errors="coerce")
+        now_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles"))
+        is_today_tip = tip_dt.dt.date == now_pt.date()
+        forecast_rows = (
+            _coerce_bool_series(d["Forecast"], default=False)
+            if "Forecast" in d.columns
+            else pd.Series(False, index=d.index, dtype=bool)
+        )
+        # Forecast rows are placeholders. Once today's tip has passed, hide them unless
+        # live data has taken over for that game.
+        stale_forecast = is_today_tip & forecast_rows & (~is_live) & (tip_dt <= now_pt)
+        keep &= ~stale_forecast.fillna(False)
+
+    return d.loc[keep].reset_index(drop=True)
+
+
 @st.cache_data(ttl=60 * 5)  # 5 min for today's live/odds data
 def _load_live_watchability_df(days_ahead: int = 7) -> pd.DataFrame:
     return build_watchability_df(days_ahead=days_ahead)
@@ -122,7 +172,8 @@ def load_watchability_df(days_ahead: int = 7) -> pd.DataFrame:
     live = _load_live_watchability_df(days_ahead=days_ahead)
     forecast = _load_forecast_watchability_df(days_ahead=days_ahead)
     out = _merge_live_and_forecast_df(live, forecast)
-    return _normalize_dashboard_df_types(out)
+    out = _normalize_dashboard_df_types(out)
+    return _filter_displayable_dashboard_rows(out)
 
 
 def inject_base_css() -> None:
