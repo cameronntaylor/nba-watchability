@@ -10,5 +10,6 @@ tweepy>=4.14
 python-dotenv>=1.0
 Pillow>=10.0.0
 pyarrow>=14.0
+pytrends>=4.9.2
 
 PyYAML>=6.0
