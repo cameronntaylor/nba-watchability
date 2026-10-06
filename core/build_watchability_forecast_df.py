@@ -14,8 +14,14 @@ from core.forecast_spread import predict_home_spread
 from core.http_cache import get_json_cached
 from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
+from core.season_strategy import (
+    PRESEASON_TEAM_QUALITY,
+    is_preseason_date,
+    nba_season_year,
+    smoothed_win_pct_input,
+)
 from core.standings import _normalize_team_name, get_record, get_win_pct
-from core.standings_espn import fetch_team_standings_detail_maps
+from core.standings_espn import fetch_team_standings_detail_maps, last_standings_fetch_meta
 from core.team_meta import get_logo_url, get_team_abbr
 from core.build_watchability_df import (
     _map_watch_provider_label,
@@ -139,7 +145,14 @@ def build_watchability_forecast_df(
     et_tz = tz.gettz("America/New_York")
     now_pt = dt.datetime.now(tz=local_tz)
 
-    winpct_map, record_map, _detail = fetch_team_standings_detail_maps()
+    winpct_map, record_map, _detail = fetch_team_standings_detail_maps(allow_prior_fallback=False)
+    standings_meta = last_standings_fetch_meta()
+    current_season_year = int(standings_meta.get("season_year") or nba_season_year(dt.date.today()))
+    prior_season_year = current_season_year - 1
+    prior_winpct_map, _prior_record_map, _prior_detail = fetch_team_standings_detail_maps(
+        season=prior_season_year,
+        allow_prior_fallback=False,
+    )
 
     # default star in win% units from TQ points.
     default_star_factor = float(cfg.default_star_tq_points) / 100.0
@@ -188,6 +201,7 @@ def build_watchability_forecast_df(
                 pass
 
             local_date = dt_local.date() if isinstance(dt_local, dt.datetime) else d
+            preseason = is_preseason_date(local_date)
             day_name = local_date.strftime("%A")
             tip_local = dt_local.strftime("%a %I:%M %p") if isinstance(dt_local, dt.datetime) else "Unknown"
             tip_et = dt_et.strftime("%a %I:%M %p") if isinstance(dt_et, dt.datetime) else "Unknown"
@@ -227,7 +241,48 @@ def build_watchability_forecast_df(
             adj_home = max(0.0, min(1.0, home_wp * float(hk["avg_health_7d"]) + float(hk["avg_star_factor_7d"])))
             adj_away = max(0.0, min(1.0, away_wp * float(ak["avg_health_7d"]) + float(ak["avg_star_factor_7d"])))
 
-            w = watch.compute_watchability(adj_home, adj_away, abs(float(home_spread)))
+            tq_home, home_alpha = smoothed_win_pct_input(
+                team_name=home,
+                current_adjusted_win_pct=adj_home,
+                current_record=(w_home_rec, l_home_rec),
+                prior_win_pct=get_win_pct(home, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=max(float(hk["avg_star_factor_7d"]), default_star_factor),
+            )
+            tq_away, away_alpha = smoothed_win_pct_input(
+                team_name=away,
+                current_adjusted_win_pct=adj_away,
+                current_record=(w_away_rec, l_away_rec),
+                prior_win_pct=get_win_pct(away, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=max(float(ak["avg_star_factor_7d"]), default_star_factor),
+            )
+            tq_home_pre, _ = smoothed_win_pct_input(
+                team_name=home,
+                current_adjusted_win_pct=home_wp * float(hk["avg_health_7d"]),
+                current_record=(w_home_rec, l_home_rec),
+                prior_win_pct=get_win_pct(home, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=max(float(hk["avg_star_factor_7d"]), default_star_factor),
+            )
+            tq_away_pre, _ = smoothed_win_pct_input(
+                team_name=away,
+                current_adjusted_win_pct=away_wp * float(ak["avg_health_7d"]),
+                current_record=(w_away_rec, l_away_rec),
+                prior_win_pct=get_win_pct(away, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=max(float(ak["avg_star_factor_7d"]), default_star_factor),
+            )
+
+            if preseason:
+                quality = PRESEASON_TEAM_QUALITY
+                closeness = watch.closeness(abs(float(home_spread)))
+                utility = watch.uavg(quality, closeness)
+                awi = 100.0 * utility
+                region = watch.awi_label(awi)
+            else:
+                w = watch.compute_watchability(tq_home, tq_away, abs(float(home_spread)))
+                quality, closeness, utility, awi, region = w.team_quality, w.closeness, w.uavg, w.awi, w.label
 
             away_score = g.get("away_score")
             home_score = g.get("home_score")
@@ -278,6 +333,12 @@ def build_watchability_forecast_df(
                         away_wp * float(ak["avg_health_7d"]) + home_wp * float(hk["avg_health_7d"])
                     ),
                     "Avg adj win% post-star": 0.5 * (adj_away + adj_home),
+                    "Team quality input win% (away)": tq_away,
+                    "Team quality input win% (home)": tq_home,
+                    "Team quality input win% (away) pre-star": tq_away_pre,
+                    "Team quality input win% (home) pre-star": tq_home_pre,
+                    "Current season weight (away)": away_alpha,
+                    "Current season weight (home)": home_alpha,
                     "Health (away)": float(ak["avg_health_7d"]),
                     "Health (home)": float(hk["avg_health_7d"]),
                     "Star factor (away)": float(ak["avg_star_factor_7d"]),
@@ -286,24 +347,31 @@ def build_watchability_forecast_df(
                     "Home Star Player": "",
                     "Away Star Raw": 0.0,
                     "Home Star Raw": 0.0,
-                    "Team quality pre-star": watch.team_quality(
-                        home_wp * float(hk["avg_health_7d"]), away_wp * float(ak["avg_health_7d"])
+                    "Team quality pre-star": (
+                        PRESEASON_TEAM_QUALITY if preseason else watch.team_quality(tq_home_pre, tq_away_pre)
                     ),
-                    "Team Quality bump (away)": float(ak["avg_star_factor_7d"]) * 100.0,
-                    "Team Quality bump (home)": float(hk["avg_star_factor_7d"]) * 100.0,
+                    "Team Quality bump (away)": (
+                        0.0 if preseason else float(ak["avg_star_factor_7d"]) * away_alpha * 100.0
+                    ),
+                    "Team Quality bump (home)": (
+                        0.0 if preseason else float(hk["avg_star_factor_7d"]) * home_alpha * 100.0
+                    ),
                     "Away Star Factor": "",
                     "Home Star Factor": "",
                     "Away Key Injuries": "",
                     "Home Key Injuries": "",
                     "Away injuries detail JSON": "[]",
                     "Home injuries detail JSON": "[]",
-                    "Team quality": float(w.team_quality),
-                    "Team Quality": float(w.team_quality),
-                    "Closeness": float(w.closeness),
-                    "Competitiveness": float(w.closeness),
-                    "Uavg": float(w.uavg),
-                    "aWI": float(w.awi),
-                    "Region": str(w.label),
+                    "Team quality": float(quality),
+                    "Team Quality": float(quality),
+                    "Closeness": float(closeness),
+                    "Competitiveness": float(closeness),
+                    "Uavg": float(utility),
+                    "aWI": float(awi),
+                    "Region": str(region),
+                    "Standings season": current_season_year,
+                    "Prior standings season": prior_season_year,
+                    "Preseason mode": preseason,
                     "Status": state,
                     "Is live": bool(is_live),
                     "ESPN game id": str(g.get("game_id") or ""),
