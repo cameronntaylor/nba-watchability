@@ -28,6 +28,19 @@ def _standings_payload(wins, losses):
 
 
 class StandingsSeasonTests(unittest.TestCase):
+    def test_standings_request_is_pinned_to_regular_season(self):
+        with patch.object(standings, "get_json_cached") as get_json:
+            get_json.return_value.data = _standings_payload(0, 0)
+
+            standings._fetch_standings_json(season=2027)
+
+        request_kwargs = get_json.call_args[1]
+        self.assertEqual(
+            request_kwargs["params"],
+            {"season": 2027, "seasontype": standings.REGULAR_SEASON_TYPE},
+        )
+        self.assertIn("season:2027:type:2", request_kwargs["cache_key"])
+
     def test_current_zero_zero_records_can_be_kept_for_smoothing(self):
         with patch.object(standings, "current_nba_season_year", return_value=2027), patch.object(
             standings, "_fetch_standings_json", return_value=_standings_payload(0, 0)
@@ -50,7 +63,7 @@ class StandingsSeasonTests(unittest.TestCase):
                 allow_prior_fallback=False,
             )
 
-        fetch.assert_called_once_with(season=2026)
+        fetch.assert_called_once_with(season=2026, season_type=standings.REGULAR_SEASON_TYPE)
         self.assertEqual(records["new york knicks"], (51, 31))
         self.assertAlmostEqual(win_pct["new york knicks"], 51 / 82)
 

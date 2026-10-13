@@ -9,6 +9,7 @@ from core.standings import _normalize_team_name
 ESPN_STANDINGS_URL = (
     "https://site.web.api.espn.com/apis/v2/sports/basketball/nba/standings"
 )
+REGULAR_SEASON_TYPE = 2
 
 # When the current season has no regular-season games yet (preseason / opening week),
 # use the prior season for win% / records so Team Quality isn't stuck at the floor.
@@ -70,12 +71,17 @@ def _should_use_prior_season(record_map: dict) -> bool:
     return _total_games_played(record_map) <= PRIOR_SEASON_GAMES_PLAYED_THRESHOLD
 
 
-def _fetch_standings_json(season: Optional[int] = None) -> dict:
-    params = {}
-    cache_key = "standings:v2"
+def _fetch_standings_json(
+    season: Optional[int] = None,
+    season_type: int = REGULAR_SEASON_TYPE,
+) -> dict:
+    # ESPN uses the all-lowercase `seasontype` query parameter here. Without it,
+    # the endpoint can return preseason standings before the regular season starts.
+    params = {"seasontype": int(season_type)}
+    cache_key = f"standings:v3:type:{int(season_type)}"
     if season is not None:
         params["season"] = int(season)
-        cache_key = f"standings:v2:season:{int(season)}"
+        cache_key = f"standings:v3:season:{int(season)}:type:{int(season_type)}"
     resp = get_json_cached(
         ESPN_STANDINGS_URL,
         namespace="espn",
@@ -87,13 +93,16 @@ def _fetch_standings_json(season: Optional[int] = None) -> dict:
     return resp.data
 
 
-def fetch_team_standings_maps(season: Optional[int] = None):
+def fetch_team_standings_maps(
+    season: Optional[int] = None,
+    season_type: int = REGULAR_SEASON_TYPE,
+):
     """
     Returns (winpct_map, record_map) where keys are normalized team names.
       - winpct_map: name -> float (0..1)
       - record_map: name -> (wins:int, losses:int)
     """
-    data = _fetch_standings_json(season=season)
+    data = _fetch_standings_json(season=season, season_type=season_type)
 
     entries = _extract_entries(data)
     if not entries:
@@ -121,13 +130,19 @@ def fetch_team_standings_maps(season: Optional[int] = None):
     return winpct_map, record_map
 
 
-def fetch_team_win_pct_map(season: Optional[int] = None):
-    winpct_map, _ = fetch_team_standings_maps(season=season)
+def fetch_team_win_pct_map(
+    season: Optional[int] = None,
+    season_type: int = REGULAR_SEASON_TYPE,
+):
+    winpct_map, _ = fetch_team_standings_maps(season=season, season_type=season_type)
     return winpct_map
 
 
-def fetch_team_record_map(season: Optional[int] = None):
-    _, record_map = fetch_team_standings_maps(season=season)
+def fetch_team_record_map(
+    season: Optional[int] = None,
+    season_type: int = REGULAR_SEASON_TYPE,
+):
+    _, record_map = fetch_team_standings_maps(season=season, season_type=season_type)
     return record_map
 
 
@@ -211,6 +226,7 @@ def fetch_team_standings_detail_maps(
     season: Optional[int] = None,
     *,
     allow_prior_fallback: bool = True,
+    season_type: int = REGULAR_SEASON_TYPE,
 ):
     """
     Returns (winpct_map, record_map, detail_map) where keys are normalized team names.
@@ -232,7 +248,7 @@ def fetch_team_standings_detail_maps(
 
     # Always request an explicit season so we don't depend on ESPN's ambiguous default
     # (which may still return the prior season before rollover).
-    data = _fetch_standings_json(season=requested)
+    data = _fetch_standings_json(season=requested, season_type=season_type)
     winpct_map, record_map, detail_map = _parse_standings_detail(data)
 
     used_season = requested
@@ -240,7 +256,7 @@ def fetch_team_standings_detail_maps(
 
     if season is None and allow_prior_fallback and _should_use_prior_season(record_map):
         prior_year = current_year - 1
-        prior_data = _fetch_standings_json(season=prior_year)
+        prior_data = _fetch_standings_json(season=prior_year, season_type=season_type)
         prior_winpct, prior_record, prior_detail = _parse_standings_detail(prior_data)
         if prior_record and not _should_use_prior_season(prior_record):
             winpct_map, record_map, detail_map = prior_winpct, prior_record, prior_detail
@@ -249,7 +265,10 @@ def fetch_team_standings_detail_maps(
 
     if not detail_map:
         # Fallback to win/record only.
-        winpct_map, record_map = fetch_team_standings_maps(season=used_season)
+        winpct_map, record_map = fetch_team_standings_maps(
+            season=used_season,
+            season_type=season_type,
+        )
         for k in set(list(winpct_map.keys()) + list(record_map.keys())):
             w, l = record_map.get(k, (None, None))
             detail_map[k] = {
@@ -266,6 +285,7 @@ def fetch_team_standings_detail_maps(
         "season_year": used_season,
         "used_prior_season": used_prior,
         "games_played": _total_games_played(record_map),
+        "season_type": int(season_type),
     }
 
     return winpct_map, record_map, detail_map
