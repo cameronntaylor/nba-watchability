@@ -25,6 +25,12 @@ from core.importance import compute_importance_detail_map
 from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
 from core.build_watchability_df import build_watchability_df
 from core.build_watchability_forecast_df import build_watchability_forecast_df
+from core.personalization import (
+    FAVORITE_PLAYERS,
+    NBA_TEAMS,
+    apply_personalization,
+    team_theme,
+)
 
 import core.watchability as watch
 
@@ -269,6 +275,13 @@ div[data-testid="collapsedControl"] {display: none;}
   border-color: transparent transparent rgba(49,51,63,0.20) transparent;
 }
 
+/* Personalization controls and context stickers */
+.personalization-label {font-size:14px; font-weight:600; margin:0 0 .25rem; color:rgba(49,51,63,.88);}
+.personalization-notes {display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;}
+.personalization-note {display:inline-flex; align-items:center; border-radius:999px; padding:2px 7px; font-size:10px; font-weight:800; color:var(--fan-primary, rgba(49,51,63,.80)); background:var(--fan-secondary-soft, rgba(31,119,180,.10)); border:1px solid var(--fan-primary-soft, rgba(31,119,180,.24));}
+.personalization-note.unavailable {color:rgba(120,35,35,.86); background:rgba(214,39,40,.08); border-color:rgba(214,39,40,.20);}
+[data-testid="stPopover"] button {min-height:40px;}
+
 /* Recommendations module */
 .rec-wrap {margin-bottom: 10px;}
 .rec-head {font-size: 22px; font-weight: 1000; color: rgba(0,0,0,0,0.9); letter-spacing: 0.2px; margin-bottom: 8px; margin-top: 68px;}
@@ -478,6 +491,111 @@ def inject_autorefresh(ms: int = 3_600_000) -> None:
         """,
         height=0,
     )
+
+
+def _favorite_player_key(index: int) -> str:
+    return f"personalization_player_{index}"
+
+
+def selected_favorite_players() -> list[str]:
+    return [
+        player.name
+        for index, player in enumerate(FAVORITE_PLAYERS)
+        if bool(st.session_state.get(_favorite_player_key(index), False))
+    ][:5]
+
+
+def selected_favorite_team() -> str | None:
+    choice = st.session_state.get("personalization_team_view", "League Pass")
+    return str(choice) if choice in NBA_TEAMS else None
+
+
+def inject_team_theme_css(team: str | None) -> None:
+    colors = team_theme(team)
+    if not colors:
+        return
+    primary, secondary = colors
+    st.markdown(
+        f"""
+<style>
+.stApp {{
+  --fan-primary: {primary};
+  --fan-primary-soft: {primary}42;
+  --fan-secondary-soft: {secondary}2B;
+  background:linear-gradient(145deg, {primary}13 0%, rgba(255,255,255,.96) 31%, {secondary}18 100%);
+}}
+.stApp h1 {{color:{primary};}}
+.stApp .rec-card {{border-color:{primary}2E;}}
+.stApp [data-testid="stSegmentedControl"] [role="radiogroup"] label:has(input:checked) {{background:{secondary}24;}}
+.stApp [data-testid="stSegmentedControl"] [role="radiogroup"] label:has(input:checked) p {{color:{primary};}}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _clear_favorite_players() -> None:
+    for index, _player in enumerate(FAVORITE_PLAYERS):
+        st.session_state[_favorite_player_key(index)] = False
+
+
+def render_personalization_controls() -> None:
+    st.markdown("<div class='personalization-label'>Your view</div>", unsafe_allow_html=True)
+    view_col, player_col = st.columns([1.75, 0.75], gap="small")
+
+    with view_col:
+        st.selectbox(
+            "Team view",
+            options=("League Pass",) + NBA_TEAMS,
+            key="personalization_team_view",
+            label_visibility="collapsed",
+            format_func=lambda choice: (
+                "League Pass view"
+                if choice == "League Pass"
+                else f"{get_team_mascot(choice) or choice} fan view"
+            ),
+            help="Choose League Pass for neutral rankings or select a team directly for its fan view.",
+        )
+
+    selected_count = len(selected_favorite_players())
+    with player_col:
+        with st.popover(
+            f"⭐ {selected_count}/5",
+            help="Choose up to five players. Their available games receive a personalized boost.",
+            use_container_width=True,
+        ):
+            st.caption("Choose up to five players")
+            grid = st.columns(3, gap="small")
+            for index, player in enumerate(FAVORITE_PLAYERS):
+                key = _favorite_player_key(index)
+                checked = bool(st.session_state.get(key, False))
+                with grid[index % 3]:
+                    st.checkbox(
+                        f"{player.name} · {get_team_abbr(player.team) or ''}",
+                        key=key,
+                        disabled=selected_count >= 5 and not checked,
+                        help=player.team,
+                    )
+            if selected_count:
+                st.button(
+                    "Clear favorites",
+                    key="personalization_clear_players",
+                    on_click=_clear_favorite_players,
+                    use_container_width=True,
+                )
+
+
+def _personalization_notes_html(row) -> str:
+    raw = str(row.get("Personalization notes") or "").strip()
+    if not raw:
+        return ""
+    notes = [note.strip() for note in raw.split("|") if note.strip()]
+    chips = []
+    for note in notes:
+        unavailable = note.lower().startswith("unavailable:")
+        cls = "personalization-note unavailable" if unavailable else "personalization-note"
+        chips.append(f"<span class='{cls}'>{py_html.escape(note)}</span>")
+    return f"<div class='personalization-notes'>{''.join(chips)}</div>"
 
 
 @st.cache_data(ttl=60 * 10)  # 10 min
@@ -840,6 +958,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
     def _menu_like_row(row) -> str:
         awi_score = int(round(float(row.get("aWI") or 0.0)))
         label = py_html.escape(str(row.get("Region") or ""))
+        personalization_html = _personalization_notes_html(row)
 
         c_str, q_str = _subscores_row(row)
 
@@ -924,6 +1043,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             f"<span class='subscore'>Competitiveness {py_html.escape(c_str)}</span>"
             f"<span class='subscore'>Team Quality {py_html.escape(q_str)}</span>"
             f"</div>"
+            f"{personalization_html}"
             f"{live_badge}"
             f"</div>"
             f"<div class='menu-matchup'>"
@@ -1073,6 +1193,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         spread_label, spread_value = _spread_str(row)
         spread_line = py_html.escape(spread_value)
         spread_label = py_html.escape(spread_label)
+        personalization_html = _personalization_notes_html(row)
 
         live_html = _live_score_html(row)
         return textwrap.dedent(
@@ -1085,6 +1206,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             <div class="rec-meta">
             <div class="rec-wi">Watchability {wi_score}</div>
             <div class="rec-wi">Competitiveness {py_html.escape(c_str)} · Team Quality {py_html.escape(q_str)}</div>
+            {personalization_html}
             <div class="rec-wi">{tip_display}</div>
             <div class="rec-wi">{spread_label}: {spread_line}</div>
             {live_html}
@@ -1123,11 +1245,13 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         spread_label = py_html.escape(spread_label)
         chip = _chips_for_row_html(row, wrap_in_divs=False)
         live_html = _live_score_html(row)
+        personalization_html = _personalization_notes_html(row)
         return textwrap.dedent(
             f"""
             <div class="rec-meta">
               <div class="rec-wi">Watchability {wi_score}</div>
               <div class="rec-wi">Competitiveness {py_html.escape(c_str)} · Team Quality {py_html.escape(q_str)}</div>
+              {personalization_html}
               <div class="rec-wi">{tip_display}</div>
               <div class="rec-wi">{spread_label}: {spread_line}</div>
               {live_html}
@@ -1646,6 +1770,24 @@ def build_dashboard_frames() -> tuple[pd.DataFrame, pd.DataFrame, list[str], dic
     return df, df_dates, date_options, date_to_label
 
 
+def render_day_selector(
+    date_options: list[str],
+    date_to_label: dict[str, str],
+    *,
+    default_day: str | None,
+) -> str | None:
+    if not date_options:
+        return None
+    default_value = default_day if default_day in date_options else date_options[0]
+    return st.segmented_control(
+        "Day",
+        options=date_options,
+        format_func=lambda value: date_to_label.get(value, value),
+        default=default_value,
+        key="dashboard_day",
+    ) or default_value
+
+
 def render_chart(
     df: pd.DataFrame,
     date_options: list[str],
@@ -1922,6 +2064,10 @@ def render_chart(
         alt.Tooltip("Record (away):N"),
         alt.Tooltip("Record (home):N"),
     ]
+    if "Base aWI" in df_plot.columns:
+        game_tooltip.insert(2, alt.Tooltip("Base aWI:Q", title="League Pass score", format=".1f"))
+    if "Personalization notes" in df_plot.columns:
+        game_tooltip.append(alt.Tooltip("Personalization notes:N", title="Your context"))
 
     circles = alt.Chart(df_plot).mark_circle(size=circle_size, opacity=0.10).encode(
         x=alt.X("Team Quality:Q", scale=alt.Scale(domain=[QUALITY_FLOOR, 1.0]), axis=None),
@@ -1954,6 +2100,8 @@ def render_chart(
         "Record (home)",
         "aWI",
         "Region",
+        "Base aWI",
+        "Personalization notes",
         "Team quality",
         "Closeness",
         "Importance",
@@ -2050,6 +2198,7 @@ def render_chart(
 def _render_menu_row(r) -> str:
     awi_score = int(round(float(r["aWI"])))
     label = py_html.escape(str(r["Region"]))
+    personalization_html = _personalization_notes_html(r)
 
     q = r.get("Team quality")
     c = r.get("Closeness")
@@ -2147,6 +2296,7 @@ def _render_menu_row(r) -> str:
 <span class="subscore">Competitiveness {c_str}</span>
 <span class="subscore">Team Quality {q_str}</span>
 </div>
+{personalization_html}
 {live_badge}
 </div>
 <div class="menu-matchup">
@@ -2311,6 +2461,7 @@ def render_full_dashboard(title: str, caption: str) -> None:
         "• Input 1 - Competitiveness: based on the spread (smaller spread = more competitive game).\n"
         "• Input 2 - Team quality: average of team winning percentages adjusted for key injuries based on players output.\n"
         "• Output: a single Watchability score + simple labels (Must Watch → Hard Skip).\n"
+        "• Personalization: optionally blends team context and available favorite-player games into that score.\n"
         "• Updates live: watchability changes as the score changes."
     )
     info_attr = py_html.escape(info_text).replace("\n", "&#10;")
@@ -2342,11 +2493,30 @@ def render_full_dashboard(title: str, caption: str) -> None:
             pass
         return
 
+    favorite_team = selected_favorite_team()
+    favorite_players = selected_favorite_players()
+    inject_team_theme_css(favorite_team)
+    df = apply_personalization(
+        df,
+        favorite_team=favorite_team,
+        favorite_players=favorite_players,
+    )
+
     default_day = None
     try:
         default_day = st.query_params.get("day")
     except Exception:
         default_day = None
+
+    controls_left, controls_right = st.columns([1.05, 1.0], gap="large")
+    with controls_left:
+        selected = render_day_selector(
+            date_options,
+            date_to_label,
+            default_day=default_day,
+        )
+    with controls_right:
+        render_personalization_controls()
 
     left, right = st.columns([1.05, 1.0], gap="large")
     with left:
@@ -2354,9 +2524,9 @@ def render_full_dashboard(title: str, caption: str) -> None:
             df=df,
             date_options=date_options,
             date_to_label=date_to_label,
-            show_day_selector=True,
-            selected_date=None,
-            default_day=default_day,
+            show_day_selector=False,
+            selected_date=selected,
+            default_day=None,
         )
         render_recommendations_module(df, slate_day=selected, wrapper_class="recs-mobile")
         st.markdown("<div style='font-size:22px; font-weight:950; margin-top:10px;'>All Games Today</div>", unsafe_allow_html=True)
@@ -2413,12 +2583,23 @@ def render_full_dashboard(title: str, caption: str) -> None:
         pass
 
 
+def _apply_session_personalization(df: pd.DataFrame) -> pd.DataFrame:
+    favorite_team = selected_favorite_team()
+    inject_team_theme_css(favorite_team)
+    return apply_personalization(
+        df,
+        favorite_team=favorite_team,
+        favorite_players=selected_favorite_players(),
+    )
+
+
 def render_chart_page() -> None:
     inject_base_css()
     df, _, date_options, date_to_label = build_dashboard_frames()
     if df.empty:
         st.warning("No NBA regular season or playoff games found. Enjoy the break!")
         return
+    df = _apply_session_personalization(df)
     selected = st.query_params.get("day")
     render_chart(
         df=df,
@@ -2436,4 +2617,5 @@ def render_table_page() -> None:
     if df.empty:
         st.warning("No NBA regular season or playoff games found. Enjoy the break!")
         return
+    df = _apply_session_personalization(df)
     render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=None)
