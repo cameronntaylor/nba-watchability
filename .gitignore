@@ -4,6 +4,7 @@
 # Python
 __pycache__/
 *.pyc
+.venv/
 core/__pycache__/
 core/*.pyc
 core/__pycache__/*.pyc
@@ -11,6 +12,7 @@ core/__pycache__/*.pyc
 # Local data / caches
 #data/
 .cache/
+data/conversation/
 
 # Local analysis
 analysis/
