@@ -55,3 +55,9 @@ update the vocabulary version whenever its contents change.
   than a valid zero-conversation interval.
 - Do not run LLM classification inside the stream loop. Classify retained rows in
   a separate retryable batch job.
+
+## Cloud deployment
+
+For an always-on capture that does not depend on a laptop, use the included Render
+background-worker configuration. Follow `docs/bluesky-render-deployment.md` for
+account setup, deployment, inspection, backup, download, and shutdown steps.

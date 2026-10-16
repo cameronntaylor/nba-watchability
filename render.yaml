@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: nba-watchability-bluesky
+    runtime: python
+    region: oregon
+    plan: 0.5c-512mb
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      python scripts/capture_bluesky.py
+      --db /var/data/bluesky.sqlite
+      --author-key-file /var/data/.author_hash_key
+      --log-every 5000
+    maxShutdownDelaySeconds: 120
+    disk:
+      name: bluesky-data
+      mountPath: /var/data
+      sizeGB: 1
