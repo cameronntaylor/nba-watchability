@@ -395,8 +395,7 @@ def apply_personalization(
         if enabled_team_components is None
         else set(enabled_team_components).intersection(TEAM_OPTIONAL_COMPONENTS)
     )
-    active_team_components = {"own_team", *enabled_team_components}
-    active_team_weight = sum(TEAM_COMPONENT_WEIGHTS[name] for name in active_team_components)
+    optional_team_weight = sum(TEAM_COMPONENT_WEIGHTS[name] for name in TEAM_OPTIONAL_COMPONENTS)
     team_mix = max(0.0, min(1.0, float(team_lambda)))
     player_mix = max(0.0, min(1.0, float(player_lambda)))
     opponent_schedule = _team_opponent_schedule(out, favorite_team) if favorite_team else []
@@ -431,13 +430,14 @@ def apply_personalization(
             for value, note in ((upcoming, upcoming_note), (rival, rival_note), (former, former_note)):
                 if value > 0 and note:
                     notes.append(note)
-            weighted_team_score = (
-                TEAM_COMPONENT_WEIGHTS["own_team"] * own
-                + TEAM_COMPONENT_WEIGHTS["upcoming_opponent"] * upcoming
+            optional_team_score = (
+                TEAM_COMPONENT_WEIGHTS["upcoming_opponent"] * upcoming
                 + TEAM_COMPONENT_WEIGHTS["rival"] * rival
                 + TEAM_COMPONENT_WEIGHTS["former_player"] * former
-            )
-            team_score = weighted_team_score / active_team_weight
+            ) / optional_team_weight
+            # Own-team games are always maximally relevant. Optional signals fill
+            # the remaining headroom for every other game and can never lower a score.
+            team_score = own + (1.0 - own / 100.0) * optional_team_score
             score = (1.0 - team_mix) * score + team_mix * team_score
 
         player_score = 0.0

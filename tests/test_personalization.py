@@ -59,12 +59,17 @@ class PersonalizationTests(unittest.TestCase):
             favorite_team="Golden State Warriors",
             enabled_team_components=[],
         )
+        result_with_all_components = apply_personalization(
+            df,
+            favorite_team="Golden State Warriors",
+        )
 
         self.assertEqual(result.loc[0, "Team fan score"], 0.0)
         self.assertEqual(result.loc[0, "Upcoming opponent score"], 0.0)
         self.assertEqual(result.loc[0, "Rival score"], 0.0)
         self.assertEqual(result.loc[1, "Own team score"], 100.0)
         self.assertEqual(result.loc[1, "Team fan score"], 100.0)
+        self.assertEqual(result_with_all_components.loc[1, "Team fan score"], 100.0)
         self.assertTrue(result.loc[1, "Team fan active"])
 
     def test_former_player_high_score_uses_prior_team(self):
