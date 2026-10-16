@@ -28,6 +28,8 @@ from core.build_watchability_forecast_df import build_watchability_forecast_df
 from core.personalization import (
     FAVORITE_PLAYERS,
     NBA_TEAMS,
+    TEAM_COMPONENT_LABELS,
+    TEAM_OPTIONAL_COMPONENTS,
     apply_personalization,
     team_theme,
 )
@@ -497,6 +499,18 @@ def _favorite_player_key(index: int) -> str:
     return f"personalization_player_{index}"
 
 
+def _team_component_key(component: str) -> str:
+    return f"personalization_team_component_{component}"
+
+
+def selected_team_components() -> list[str]:
+    return [
+        component
+        for component in TEAM_OPTIONAL_COMPONENTS
+        if bool(st.session_state.get(_team_component_key(component), True))
+    ]
+
+
 def selected_favorite_players() -> list[str]:
     return [
         player.name
@@ -541,7 +555,7 @@ def _clear_favorite_players() -> None:
 
 def render_personalization_controls() -> None:
     st.markdown("<div class='personalization-label'>Your view</div>", unsafe_allow_html=True)
-    view_col, player_col = st.columns([1.75, 0.75], gap="small")
+    view_col, factors_col, player_col = st.columns([1.85, 0.58, 0.58], gap="small")
 
     with view_col:
         st.selectbox(
@@ -552,17 +566,33 @@ def render_personalization_controls() -> None:
             format_func=lambda choice: (
                 "League Pass view"
                 if choice == "League Pass"
-                else f"{get_team_mascot(choice) or choice} fan view"
+                else choice
             ),
             help="Choose League Pass for neutral rankings or select a team directly for its fan view.",
         )
+
+    selected_factor_count = len(selected_team_components())
+    with factors_col:
+        with st.popover(
+            f"⚙️ {selected_factor_count}/3",
+            help="Choose which extra signals contribute to the team fan score.",
+            width="stretch",
+        ):
+            st.markdown("✅ **Your team is playing**  \nAlways on")
+            st.caption("Extra team fan score components")
+            for component in TEAM_OPTIONAL_COMPONENTS:
+                st.checkbox(
+                    TEAM_COMPONENT_LABELS[component],
+                    value=True,
+                    key=_team_component_key(component),
+                )
 
     selected_count = len(selected_favorite_players())
     with player_col:
         with st.popover(
             f"⭐ {selected_count}/5",
             help="Choose up to five players. Their available games receive a personalized boost.",
-            use_container_width=True,
+            width="stretch",
         ):
             st.caption("Choose up to five players")
             grid = st.columns(3, gap="small")
@@ -574,14 +604,13 @@ def render_personalization_controls() -> None:
                         f"{player.name} · {get_team_abbr(player.team) or ''}",
                         key=key,
                         disabled=selected_count >= 5 and not checked,
-                        help=player.team,
                     )
             if selected_count:
                 st.button(
                     "Clear favorites",
                     key="personalization_clear_players",
                     on_click=_clear_favorite_players,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
 
@@ -596,6 +625,44 @@ def _personalization_notes_html(row) -> str:
         cls = "personalization-note unavailable" if unavailable else "personalization-note"
         chips.append(f"<span class='{cls}'>{py_html.escape(note)}</span>")
     return f"<div class='personalization-notes'>{''.join(chips)}</div>"
+
+
+def _score_display_parts(row) -> tuple[str, str, str, str, str, str]:
+    def rounded(value, *, multiplier: float = 1.0) -> str:
+        try:
+            number = float(value) * multiplier
+        except (TypeError, ValueError):
+            return "—"
+        if pd.isna(number):
+            return "—"
+        return str(int(round(number)))
+
+    adjusted_score = rounded(row.get("aWI"))
+    team_fan_active = row.get("Team fan active", False)
+    if not pd.isna(team_fan_active) and bool(team_fan_active):
+        return (
+            "Adjusted Watchability",
+            adjusted_score,
+            "General Watchability",
+            rounded(row.get("Base aWI")),
+            "Team Fan Watchability",
+            rounded(row.get("Team fan score")),
+        )
+
+    personalization_active = row.get("Personalization active", False)
+    score_label = (
+        "Adjusted Watchability"
+        if not pd.isna(personalization_active) and bool(personalization_active)
+        else "Watchability"
+    )
+    return (
+        score_label,
+        adjusted_score,
+        "Competitiveness",
+        rounded(row.get("Closeness"), multiplier=100.0),
+        "Team Quality",
+        rounded(row.get("Team quality"), multiplier=100.0),
+    )
 
 
 @st.cache_data(ttl=60 * 10)  # 10 min
@@ -943,24 +1010,13 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
 
     d["_w2wn_score"] = d.apply(_w2wn_score_row, axis=1)
 
-    def _subscores_row(r) -> tuple[str, str]:
-        q = r.get("Team quality")
-        c = r.get("Closeness")
-        q_score = None if q is None else 100.0 * float(q)
-        c_score = None if c is None else 100.0 * float(c)
-        q_str = "—" if q_score is None else str(int(round(q_score)))
-        c_str = "—" if c_score is None else str(int(round(c_score)))
-        return c_str, q_str
-
     def _spread_str(r) -> tuple[str, str]:
         return _spread_display_parts(r)
 
     def _menu_like_row(row) -> str:
-        awi_score = int(round(float(row.get("aWI") or 0.0)))
+        score_label, awi_score, sub1_label, sub1_value, sub2_label, sub2_value = _score_display_parts(row)
         label = py_html.escape(str(row.get("Region") or ""))
         personalization_html = _personalization_notes_html(row)
-
-        c_str, q_str = _subscores_row(row)
 
         live_badge = ""
         is_live = bool(row.get("_is_live", False)) or str(row.get("_status") or "").lower() == "in"
@@ -1038,10 +1094,10 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             f"<div class='menu-row rec-menu-row'>"
             f"<div class='menu-awi'>"
             f"<div class='label'>{label}</div>"
-            f"<div class='score'>Watchability {awi_score}</div>"
+            f"<div class='score'>{score_label} {awi_score}</div>"
             f"<div class='subscores'>"
-            f"<span class='subscore'>Competitiveness {py_html.escape(c_str)}</span>"
-            f"<span class='subscore'>Team Quality {py_html.escape(q_str)}</span>"
+            f"<span class='subscore'>{sub1_label} {sub1_value}</span>"
+            f"<span class='subscore'>{sub2_label} {sub2_value}</span>"
             f"</div>"
             f"{personalization_html}"
             f"{live_badge}"
@@ -1187,9 +1243,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
 
     def _rec_card(*, title: str, title_class: str, subtitle: str, row, extra_meta: str = "") -> str:
         tip_display = py_html.escape(_tip_pt_et(row) or str(row.get("Tip display") or row.get("Tip short") or ""))
-        wi_score = int(round(float(row.get("aWI") or 0.0)))
+        score_label, wi_score, sub1_label, sub1_value, sub2_label, sub2_value = _score_display_parts(row)
         chip = _chips_for_row_html(row, wrap_in_divs=False)
-        c_str, q_str = _subscores_row(row)
         spread_label, spread_value = _spread_str(row)
         spread_line = py_html.escape(spread_value)
         spread_label = py_html.escape(spread_label)
@@ -1204,8 +1259,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             <div class="rec-row">
             {_matchup_block(row)}
             <div class="rec-meta">
-            <div class="rec-wi">Watchability {wi_score}</div>
-            <div class="rec-wi">Competitiveness {py_html.escape(c_str)} · Team Quality {py_html.escape(q_str)}</div>
+            <div class="rec-wi">{score_label} {wi_score}</div>
+            <div class="rec-wi">{sub1_label} {sub1_value} · {sub2_label} {sub2_value}</div>
             {personalization_html}
             <div class="rec-wi">{tip_display}</div>
             <div class="rec-wi">{spread_label}: {spread_line}</div>
@@ -1238,8 +1293,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
 
     def _rec_meta_block(row) -> str:
         tip_display = py_html.escape(_tip_pt_et(row) or str(row.get("Tip display") or row.get("Tip short") or ""))
-        wi_score = int(round(float(row.get("aWI") or 0.0)))
-        c_str, q_str = _subscores_row(row)
+        score_label, wi_score, sub1_label, sub1_value, sub2_label, sub2_value = _score_display_parts(row)
         spread_label, spread_value = _spread_str(row)
         spread_line = py_html.escape(spread_value)
         spread_label = py_html.escape(spread_label)
@@ -1249,8 +1303,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         return textwrap.dedent(
             f"""
             <div class="rec-meta">
-              <div class="rec-wi">Watchability {wi_score}</div>
-              <div class="rec-wi">Competitiveness {py_html.escape(c_str)} · Team Quality {py_html.escape(q_str)}</div>
+              <div class="rec-wi">{score_label} {wi_score}</div>
+              <div class="rec-wi">{sub1_label} {sub1_value} · {sub2_label} {sub2_value}</div>
               {personalization_html}
               <div class="rec-wi">{tip_display}</div>
               <div class="rec-wi">{spread_label}: {spread_line}</div>
@@ -1474,10 +1528,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             wi_avg = int(round(0.5 * (float(g1.get("aWI") or 0.0) + float(g2.get("aWI") or 0.0))))
             tip1 = py_html.escape(str(g1.get("Tip display") or g1.get("Tip short") or ""))
             tip2 = py_html.escape(str(g2.get("Tip display") or g2.get("Tip short") or ""))
-            wi1 = int(round(float(g1.get("aWI") or 0.0)))
-            wi2 = int(round(float(g2.get("aWI") or 0.0)))
-            c1, q1 = _subscores_row(g1)
-            c2, q2 = _subscores_row(g2)
+            score_label1, wi1, sub1_label1, sub1_value1, sub2_label1, sub2_value1 = _score_display_parts(g1)
+            score_label2, wi2, sub1_label2, sub1_value2, sub2_label2, sub2_value2 = _score_display_parts(g2)
             spread_label1, spread_value1 = _spread_str(g1)
             spread_label2, spread_value2 = _spread_str(g2)
             spread1 = py_html.escape(spread_value1)
@@ -1495,8 +1547,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                 <div class="rec-row">
                   {_matchup_block(g1)}
                   <div class="rec-meta">
-                    <div class="rec-wi">Watchability {wi1}</div>
-                    <div class="rec-wi">Competitiveness {py_html.escape(c1)} · Team Quality {py_html.escape(q1)}</div>
+                    <div class="rec-wi">{score_label1} {wi1}</div>
+                    <div class="rec-wi">{sub1_label1} {sub1_value1} · {sub2_label1} {sub2_value1}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g1) or '') or tip1}</div>
                     <div class="rec-wi">{spread_label1}: {spread1}</div>
                     {chip1}
@@ -1505,8 +1557,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                 <div class="rec-row">
                   {_matchup_block(g2)}
                   <div class="rec-meta">
-                    <div class="rec-wi">Watchability {wi2}</div>
-                    <div class="rec-wi">Competitiveness {py_html.escape(c2)} · Team Quality {py_html.escape(q2)}</div>
+                    <div class="rec-wi">{score_label2} {wi2}</div>
+                    <div class="rec-wi">{sub1_label2} {sub1_value2} · {sub2_label2} {sub2_value2}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g2) or '') or tip2}</div>
                     <div class="rec-wi">{spread_label2}: {spread2}</div>
                     {chip2}
@@ -1543,10 +1595,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             wi_avg = int(round(0.5 * (float(g1.get("aWI") or 0.0) + float(g2.get("aWI") or 0.0))))
             tip1 = py_html.escape(str(g1.get("Tip display") or g1.get("Tip short") or ""))
             tip2 = py_html.escape(str(g2.get("Tip display") or g2.get("Tip short") or ""))
-            wi1 = int(round(float(g1.get("aWI") or 0.0)))
-            wi2 = int(round(float(g2.get("aWI") or 0.0)))
-            c1, q1 = _subscores_row(g1)
-            c2, q2 = _subscores_row(g2)
+            score_label1, wi1, sub1_label1, sub1_value1, sub2_label1, sub2_value1 = _score_display_parts(g1)
+            score_label2, wi2, sub1_label2, sub1_value2, sub2_label2, sub2_value2 = _score_display_parts(g2)
             spread_label1, spread_value1 = _spread_str(g1)
             spread_label2, spread_value2 = _spread_str(g2)
             spread1 = py_html.escape(spread_value1)
@@ -1564,8 +1614,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                 <div class="rec-row">
                   {_matchup_block(g1)}
                   <div class="rec-meta">
-                    <div class="rec-wi">Watchability {wi1}</div>
-                    <div class="rec-wi">Competitiveness {py_html.escape(c1)} · Team Quality {py_html.escape(q1)}</div>
+                    <div class="rec-wi">{score_label1} {wi1}</div>
+                    <div class="rec-wi">{sub1_label1} {sub1_value1} · {sub2_label1} {sub2_value1}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g1) or '') or tip1}</div>
                     <div class="rec-wi">{spread_label1}: {spread1}</div>
                     {chip1}
@@ -1574,8 +1624,8 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
                 <div class="rec-row">
                   {_matchup_block(g2)}
                   <div class="rec-meta">
-                    <div class="rec-wi">Watchability {wi2}</div>
-                    <div class="rec-wi">Competitiveness {py_html.escape(c2)} · Team Quality {py_html.escape(q2)}</div>
+                    <div class="rec-wi">{score_label2} {wi2}</div>
+                    <div class="rec-wi">{sub1_label2} {sub1_value2} · {sub2_label2} {sub2_value2}</div>
                     <div class="rec-wi">{py_html.escape(_tip_pt_et(g2) or '') or tip2}</div>
                     <div class="rec-wi">{spread_label2}: {spread2}</div>
                     {chip2}
@@ -2196,16 +2246,9 @@ def render_chart(
 
 
 def _render_menu_row(r) -> str:
-    awi_score = int(round(float(r["aWI"])))
+    score_label, awi_score, sub1_label, sub1_value, sub2_label, sub2_value = _score_display_parts(r)
     label = py_html.escape(str(r["Region"]))
     personalization_html = _personalization_notes_html(r)
-
-    q = r.get("Team quality")
-    c = r.get("Closeness")
-    q_score = None if q is None else 100.0 * float(q)
-    c_score = None if c is None else 100.0 * float(c)
-    q_str = "—" if q_score is None else str(int(round(q_score)))
-    c_str = "—" if c_score is None else str(int(round(c_score)))
 
     live_badge = ""
     if bool(r.get("Is live", False)):
@@ -2291,10 +2334,10 @@ def _render_menu_row(r) -> str:
     return f"""<div class="rec-card menu-row">
 <div class="menu-awi">
 <div class="label">{label}</div>
-<div class="score">Watchability {awi_score}</div>
+<div class="score">{score_label} {awi_score}</div>
 <div class="subscores">
-<span class="subscore">Competitiveness {c_str}</span>
-<span class="subscore">Team Quality {q_str}</span>
+<span class="subscore">{sub1_label} {sub1_value}</span>
+<span class="subscore">{sub2_label} {sub2_value}</span>
 </div>
 {personalization_html}
 {live_badge}
@@ -2495,11 +2538,13 @@ def render_full_dashboard(title: str, caption: str) -> None:
 
     favorite_team = selected_favorite_team()
     favorite_players = selected_favorite_players()
+    team_components = selected_team_components()
     inject_team_theme_css(favorite_team)
     df = apply_personalization(
         df,
         favorite_team=favorite_team,
         favorite_players=favorite_players,
+        enabled_team_components=team_components,
     )
 
     default_day = None
@@ -2590,6 +2635,7 @@ def _apply_session_personalization(df: pd.DataFrame) -> pd.DataFrame:
         df,
         favorite_team=favorite_team,
         favorite_players=selected_favorite_players(),
+        enabled_team_components=selected_team_components(),
     )
 
 

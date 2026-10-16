@@ -22,6 +22,16 @@ TEAM_COMPONENT_WEIGHTS = {
     "rival": 0.20,
     "former_player": 0.15,
 }
+TEAM_OPTIONAL_COMPONENTS = (
+    "upcoming_opponent",
+    "rival",
+    "former_player",
+)
+TEAM_COMPONENT_LABELS = {
+    "upcoming_opponent": "Upcoming opponents",
+    "rival": "Rivalry games",
+    "former_player": "Former players",
+}
 
 
 NBA_TEAMS = tuple(
@@ -358,6 +368,7 @@ def apply_personalization(
     *,
     favorite_team: str | None = None,
     favorite_players: Iterable[str] = (),
+    enabled_team_components: Iterable[str] | None = None,
     team_lambda: float = TEAM_FAN_LAMBDA,
     player_lambda: float = FAVORITE_PLAYER_LAMBDA,
 ) -> pd.DataFrame:
@@ -379,6 +390,13 @@ def apply_personalization(
     favorite_team = favorite_team if favorite_team in NBA_TEAMS else None
     selected_players = [FAVORITE_PLAYER_BY_NAME[name] for name in favorite_players if name in FAVORITE_PLAYER_BY_NAME]
     selected_players = selected_players[:5]
+    enabled_team_components = (
+        set(TEAM_OPTIONAL_COMPONENTS)
+        if enabled_team_components is None
+        else set(enabled_team_components).intersection(TEAM_OPTIONAL_COMPONENTS)
+    )
+    active_team_components = {"own_team", *enabled_team_components}
+    active_team_weight = sum(TEAM_COMPONENT_WEIGHTS[name] for name in active_team_components)
     team_mix = max(0.0, min(1.0, float(team_lambda)))
     player_mix = max(0.0, min(1.0, float(player_lambda)))
     opponent_schedule = _team_opponent_schedule(out, favorite_team) if favorite_team else []
@@ -397,22 +415,29 @@ def apply_personalization(
             if favorite_team_key in participants:
                 own = 100.0
                 notes.append("Your team")
-            upcoming, upcoming_note = _upcoming_opponent_score(
-                row,
-                favorite_team_key=favorite_team_key,
-                opponent_schedule=opponent_schedule,
-            )
-            rival, rival_note = _rival_score(row, favorite_team)
-            former, former_note = _former_player_score(row, favorite_team)
+            upcoming, upcoming_note = (0.0, "")
+            rival, rival_note = (0.0, "")
+            former, former_note = (0.0, "")
+            if "upcoming_opponent" in enabled_team_components:
+                upcoming, upcoming_note = _upcoming_opponent_score(
+                    row,
+                    favorite_team_key=favorite_team_key,
+                    opponent_schedule=opponent_schedule,
+                )
+            if "rival" in enabled_team_components:
+                rival, rival_note = _rival_score(row, favorite_team)
+            if "former_player" in enabled_team_components:
+                former, former_note = _former_player_score(row, favorite_team)
             for value, note in ((upcoming, upcoming_note), (rival, rival_note), (former, former_note)):
                 if value > 0 and note:
                     notes.append(note)
-            team_score = (
+            weighted_team_score = (
                 TEAM_COMPONENT_WEIGHTS["own_team"] * own
                 + TEAM_COMPONENT_WEIGHTS["upcoming_opponent"] * upcoming
                 + TEAM_COMPONENT_WEIGHTS["rival"] * rival
                 + TEAM_COMPONENT_WEIGHTS["former_player"] * former
             )
+            team_score = weighted_team_score / active_team_weight
             score = (1.0 - team_mix) * score + team_mix * team_score
 
         player_score = 0.0
@@ -455,6 +480,8 @@ def apply_personalization(
     personalized = out.apply(personalize_row, axis=1)
     for column in personalized.columns:
         out[column] = personalized[column]
+    out["Team fan active"] = bool(favorite_team)
+    out["Favorite player active"] = bool(selected_players)
     out["Personalization active"] = bool(favorite_team or selected_players)
     return out
 
