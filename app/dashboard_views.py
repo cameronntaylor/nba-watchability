@@ -507,7 +507,7 @@ def selected_team_components() -> list[str]:
     return [
         component
         for component in TEAM_OPTIONAL_COMPONENTS
-        if bool(st.session_state.get(_team_component_key(component), True))
+        if bool(st.session_state.get(_team_component_key(component), False))
     ]
 
 
@@ -583,7 +583,7 @@ def render_personalization_controls() -> None:
             for component in TEAM_OPTIONAL_COMPONENTS:
                 st.checkbox(
                     TEAM_COMPONENT_LABELS[component],
-                    value=True,
+                    value=False,
                     key=_team_component_key(component),
                 )
 
