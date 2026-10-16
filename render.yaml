@@ -10,7 +10,6 @@ services:
       --db /var/data/bluesky.sqlite
       --author-key-file /var/data/.author_hash_key
       --log-every 5000
-    maxShutdownDelaySeconds: 120
     disk:
       name: bluesky-data
       mountPath: /var/data
