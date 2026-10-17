@@ -603,6 +603,7 @@ def build_watchability_df(
     days_ahead: int = 2,
     tz_name: str = "America/Los_Angeles",
     include_post: bool = False,
+    precomputed_team_impacts: dict[str, list[PlayerImpact]] | None = None,
 ) -> pd.DataFrame:
     """
     Build the per-game DataFrame used by the dashboard and downstream scripts.
@@ -625,7 +626,11 @@ def build_watchability_df(
     # Compute player impact shares lazily only for teams that have injuries in a specific matchup.
     # This is a major performance win vs. computing for every team on every refresh.
     team_name_by_key = { _normalize_team_name(n): n for n in team_names }
-    team_impacts: dict[str, list[PlayerImpact]] = {}
+    team_impacts: dict[str, list[PlayerImpact]] = {
+        _normalize_team_name(team_name): list(players)
+        for team_name, players in (precomputed_team_impacts or {}).items()
+        if _normalize_team_name(team_name) in team_name_by_key
+    }
 
     rows: list[dict[str, Any]] = []
     for g in games:
@@ -920,31 +925,36 @@ def build_watchability_df(
             return team_key, []
 
     if has_regular_season_games:
-        with cf.ThreadPoolExecutor(max_workers=star_workers) as ex:
-            futures = [
-                ex.submit(_fetch_team, team_key, team_name_by_key.get(team_key, team_key))
-                for team_key in sorted(team_name_by_key.keys())
-            ]
-            for fut in cf.as_completed(futures):
-                k, players = fut.result()
-                # Keep the full list for robust injury matching and logging.
-                team_impacts[k] = players
-                if players:
-                    def _star_sum(pl: PlayerImpact) -> float:
-                        return (
-                            float(pl.points_per_game)
-                            + float(STAR_REB_WEIGHT) * float(pl.rebounds_per_game)
-                            + float(STAR_AST_WEIGHT) * float(pl.assists_per_game)
-                            + float(pl.steals_per_game)
-                            + float(pl.blocks_per_game)
-                        )
+        missing_team_keys = sorted(set(team_name_by_key) - set(team_impacts))
+        if missing_team_keys:
+            with cf.ThreadPoolExecutor(max_workers=star_workers) as ex:
+                futures = [
+                    ex.submit(_fetch_team, team_key, team_name_by_key.get(team_key, team_key))
+                    for team_key in missing_team_keys
+                ]
+                for fut in cf.as_completed(futures):
+                    k, players = fut.result()
+                    # Keep the full list for robust injury matching and logging.
+                    team_impacts[k] = players
 
-                    best = max(players, key=_star_sum)
-                    ssum = _star_sum(best)
-                    denom = float(STAR_DENOM) if float(STAR_DENOM) else 1.0
-                    sraw = float(ssum) / denom
-                    sraw = sraw * sraw * sraw
-                    top_scorer[k] = (best.athlete_id, best.name, sraw, ssum)
+        def _star_sum(pl: PlayerImpact) -> float:
+            return (
+                float(pl.points_per_game)
+                + float(STAR_REB_WEIGHT) * float(pl.rebounds_per_game)
+                + float(STAR_AST_WEIGHT) * float(pl.assists_per_game)
+                + float(pl.steals_per_game)
+                + float(pl.blocks_per_game)
+            )
+
+        for team_key, players in team_impacts.items():
+            if not players:
+                continue
+            best = max(players, key=_star_sum)
+            ssum = _star_sum(best)
+            denom = float(STAR_DENOM) if float(STAR_DENOM) else 1.0
+            sraw = float(ssum) / denom
+            sraw = sraw * sraw * sraw
+            top_scorer[team_key] = (best.athlete_id, best.name, sraw, ssum)
 
     def _status_priority(status: str) -> int:
         s = (status or "").strip().lower()

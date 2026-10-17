@@ -6,6 +6,7 @@ import os
 import sys
 import datetime as dt
 import textwrap
+import concurrent.futures as cf
 from typing import Tuple, Dict, List
 
 import altair as alt
@@ -20,7 +21,7 @@ from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps
 from core.team_meta import get_logo_url, get_team_abbr, get_team_mascot
-from core.health_espn import compute_team_player_impacts, injury_weight
+from core.health_espn import PlayerImpact, compute_team_player_impacts, injury_weight
 from core.importance import compute_importance_detail_map
 from core.watchability_v2_params import KEY_INJURY_IMPACT_SHARE_THRESHOLD, INJURY_OVERALL_IMPORTANCE_WEIGHT
 from core.build_watchability_df import build_watchability_df
@@ -151,9 +152,36 @@ def _filter_displayable_dashboard_rows(df: pd.DataFrame) -> pd.DataFrame:
     return d.loc[keep].reset_index(drop=True)
 
 
-@st.cache_data(ttl=60 * 5)  # 5 min for today's live/odds data
+@st.cache_data(ttl=60 * 60 * 24, show_spinner="Refreshing player ratings…")
+def _load_player_impacts_for_watchability(
+    team_names: tuple[str, ...],
+) -> dict[str, list[PlayerImpact]]:
+    """Load slow-changing roster/stat inputs independently of live game data."""
+
+    def _fetch(team_name: str) -> tuple[str, list[PlayerImpact]]:
+        team_key = _normalize_team_name(team_name)
+        try:
+            return team_key, compute_team_player_impacts(team_name)
+        except Exception:
+            return team_key, []
+
+    impacts: dict[str, list[PlayerImpact]] = {}
+    max_workers = max(1, min(8, len(team_names)))
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_fetch, team_name) for team_name in team_names]
+        for future in cf.as_completed(futures):
+            team_key, players = future.result()
+            impacts[team_key] = players
+    return impacts
+
+
+@st.cache_data(ttl=60 * 5)  # 5 min for today's live/odds/injury data
 def _load_live_watchability_df(days_ahead: int = 7) -> pd.DataFrame:
-    return build_watchability_df(days_ahead=days_ahead)
+    team_impacts = _load_player_impacts_for_watchability(tuple(NBA_TEAMS))
+    return build_watchability_df(
+        days_ahead=days_ahead,
+        precomputed_team_impacts=team_impacts,
+    )
 
 
 @st.cache_data(ttl=60 * 60)  # 1h for 7d forecast supplement
@@ -676,36 +704,6 @@ def load_standings():
         return fetch_team_standings_detail_maps()
     except Exception:
         return {}, {}, {}
-
-
-@st.cache_data(ttl=60 * 60 * 24)  # 24 hours (impact stats stable-ish)
-def load_team_impacts(team_names: tuple[str, ...]) -> dict[str, dict]:
-    """
-    Returns per-team (normalized team name):
-      { 'players': [{id,name,raw,share,rel}] }
-    """
-    out: dict[str, dict] = {}
-    for name in team_names:
-        key = _normalize_team_name(name)
-        try:
-            players = compute_team_player_impacts(name)
-        except Exception:
-            out[key] = {"players": []}
-            continue
-
-        out[key] = {
-            "players": [
-                {
-                    "id": p.athlete_id,
-                    "name": p.name,
-                    "raw": float(p.raw_impact),
-                    "share": float(p.impact_share),
-                    "rel": float(p.relative_raw_impact),
-                }
-                for p in players
-            ]
-        }
-    return out
 
 
 def _parse_score(x):
