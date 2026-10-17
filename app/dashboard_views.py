@@ -314,7 +314,7 @@ div[data-testid="collapsedControl"] {display: none;}
 
 /* Recommendations module */
 .rec-wrap {margin-bottom: 10px;}
-.rec-head {font-size: 22px; font-weight: 1000; color: rgba(0,0,0,0,0.9); letter-spacing: 0.2px; margin-bottom: 8px; margin-top: 68px;}
+.rec-head {font-size: 22px; font-weight: 1000; color: rgba(0,0,0,0,0.9); letter-spacing: 0.2px; margin-bottom: 8px; margin-top: 0;}
 .rec-card {border: 1px solid rgba(49,51,63,0.15); border-radius: 14px; padding: 12px 12px; background: rgba(255,255,255,0.92); box-shadow: 0 8px 22px rgba(0,0,0,0.06); margin-bottom: 10px;}
 .rec-title {font-size: 20px; font-weight: 900; color: rgba(49,51,63,0.90); line-height: 1.1;}
 .rec-title.now {color: rgba(214, 39, 40, 0.90);}   /* red tint */
