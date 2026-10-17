@@ -14,7 +14,7 @@ from core.watchability import awi_label
 
 
 # These are intentionally centralized so the first-pass product weights are easy to tune.
-TEAM_FAN_LAMBDA = 0.35
+TEAM_FAN_LAMBDA = 0.50
 FAVORITE_PLAYER_LAMBDA = 0.25
 TEAM_COMPONENT_WEIGHTS = {
     "own_team": 0.45,

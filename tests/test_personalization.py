@@ -44,6 +44,7 @@ class PersonalizationTests(unittest.TestCase):
         self.assertEqual(result.loc[0, "Rival score"], 100.0)
         self.assertEqual(result.loc[1, "Own team score"], 100.0)
         self.assertEqual(result.loc[1, "Rival score"], 100.0)
+        self.assertEqual(result.loc[1, "aWI"], 80.0)
         self.assertEqual(result.loc[2, "Rival score"], 50.0)
         self.assertIn("Your team", result.loc[1, "Personalization notes"])
 
