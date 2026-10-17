@@ -40,6 +40,19 @@ python scripts/inspect_bluesky_capture.py \
   --hours 24
 ```
 
+Resolve direct team mentions and current ESPN roster-player mentions into team
+conversation totals and hourly trends:
+
+```bash
+python scripts/analyze_bluesky_teams.py \
+  --db /var/data/bluesky.sqlite \
+  --hours 72 \
+  --top 15
+```
+
+The analysis fetches and caches current ESPN rosters when it runs. It does not
+make ESPN calls in the live Bluesky capture loop.
+
 Export the active retained rows to CSV:
 
 ```bash
