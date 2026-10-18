@@ -1,4 +1,4 @@
-streamlit>=1.32
+streamlit>=1.40
 pandas>=2.1
 numpy>=1.26
 requests>=2.31
@@ -12,3 +12,4 @@ Pillow>=10.0.0
 pyarrow>=14.0
 
 PyYAML>=6.0
+posthog>=7.0,<8

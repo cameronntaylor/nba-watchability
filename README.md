@@ -3,6 +3,13 @@ https://nba-watchability.streamlit.app/
 
 https://x.com/NBAWhatToWatch
 
+## Anonymous analytics
+
+The dashboard supports optional, anonymous PostHog product analytics for slate
+views, filters, sorting, and game selections. It runs normally when analytics
+is not configured. Setup details and the event schema are in
+[`docs/analytics.md`](docs/analytics.md).
+
 ## Season-transition strategy
 
 - Through Oct. 19, odds come from The Odds API's `basketball_nba_preseason` competition and Team Quality is fixed at 40.
