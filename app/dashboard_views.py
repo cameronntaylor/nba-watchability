@@ -8,6 +8,7 @@ import datetime as dt
 import textwrap
 import concurrent.futures as cf
 from typing import Tuple, Dict, List
+from urllib.parse import urlparse
 
 import altair as alt
 import pandas as pd
@@ -16,6 +17,13 @@ import requests
 from dateutil import parser as dtparser
 from dateutil import tz
 
+from app.analytics import (
+    capture_event,
+    capture_once,
+    initialize_visitor_identity,
+    track_link_clicks,
+    track_session_started,
+)
 from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
@@ -394,6 +402,36 @@ div[data-testid="collapsedControl"] {display: none;}
 .caption-row {display: inline-flex; align-items: center; gap: 10px;}
 .caption-text {color: rgba(49,51,63,0.6); font-size: 0.9rem; line-height: 1.25;}
 .caption-spacer {height: 14px;}
+.analytics-privacy {position:relative; display:inline-flex; margin-top:6px; font-size:11px; line-height:1.2; color:rgba(49,51,63,.52);}
+.analytics-privacy-label {cursor:help; border-bottom:1px dotted rgba(49,51,63,.32); outline:none;}
+.analytics-privacy-label:focus-visible {color:rgba(49,51,63,.82); border-bottom-color:rgba(49,51,63,.60);}
+.analytics-privacy-tooltip {
+  position:absolute;
+  left:0;
+  bottom:calc(100% + 8px);
+  z-index:9999;
+  width:min(360px, calc(100vw - 48px));
+  visibility:hidden;
+  opacity:0;
+  pointer-events:none;
+  white-space:normal;
+  background:rgba(255,255,255,.98);
+  color:rgba(49,51,63,.95);
+  border:1px solid rgba(49,51,63,.20);
+  box-shadow:0 8px 24px rgba(0,0,0,.10);
+  padding:9px 11px;
+  border-radius:9px;
+  font-size:12px;
+  font-weight:500;
+  line-height:1.35;
+  text-align:left;
+  transition:opacity .12s ease;
+}
+.analytics-privacy-label:hover + .analytics-privacy-tooltip,
+.analytics-privacy-label:focus + .analytics-privacy-tooltip {
+  visibility:visible;
+  opacity:1;
+}
 .info-icon[data-tooltip]:hover::after {
   content: attr(data-tooltip);
   position: absolute;
@@ -552,6 +590,48 @@ def selected_favorite_team() -> str | None:
     return str(choice) if choice in NBA_TEAMS else None
 
 
+def _initialize_previous_widget_value(widget_key: str, previous_key: str, default) -> None:
+    if previous_key not in st.session_state:
+        st.session_state[previous_key] = st.session_state.get(widget_key, default)
+
+
+def _track_scalar_widget_change(
+    event_name: str,
+    widget_key: str,
+    previous_key: str,
+    context: dict | None = None,
+) -> None:
+    new_value = st.session_state.get(widget_key)
+    previous_value = st.session_state.get(previous_key)
+    st.session_state[previous_key] = new_value
+    if new_value == previous_value:
+        return
+    capture_event(
+        event_name,
+        {
+            "previous_value": previous_value,
+            "new_value": new_value,
+            **(context or {}),
+        },
+    )
+
+
+def _track_favorite_players_changed() -> None:
+    players = selected_favorite_players()
+    capture_event(
+        "favorite_players_changed",
+        {"favorite_players": players, "favorite_player_count": len(players)},
+    )
+
+
+def _track_team_factors_changed() -> None:
+    factors = selected_team_components()
+    capture_event(
+        "team_factors_changed",
+        {"team_factors": factors, "team_factor_count": len(factors)},
+    )
+
+
 def inject_team_theme_css(team: str | None) -> None:
     colors = team_theme(team)
     if not colors:
@@ -579,6 +659,7 @@ def inject_team_theme_css(team: str | None) -> None:
 def _clear_favorite_players() -> None:
     for index, _player in enumerate(FAVORITE_PLAYERS):
         st.session_state[_favorite_player_key(index)] = False
+    _track_favorite_players_changed()
 
 
 def render_personalization_controls() -> None:
@@ -586,6 +667,8 @@ def render_personalization_controls() -> None:
     view_col, factors_col, player_col = st.columns([1.85, 0.58, 0.58], gap="small")
 
     with view_col:
+        previous_key = "_analytics_previous_personalization_team_view"
+        _initialize_previous_widget_value("personalization_team_view", previous_key, "League Pass")
         st.selectbox(
             "Team view",
             options=("League Pass",) + NBA_TEAMS,
@@ -597,6 +680,12 @@ def render_personalization_controls() -> None:
                 else choice
             ),
             help="Choose League Pass for neutral rankings or select a team directly for its fan view.",
+            on_change=_track_scalar_widget_change,
+            args=(
+                "team_view_changed",
+                "personalization_team_view",
+                previous_key,
+            ),
         )
 
     selected_factor_count = len(selected_team_components())
@@ -613,6 +702,7 @@ def render_personalization_controls() -> None:
                     TEAM_COMPONENT_LABELS[component],
                     value=False,
                     key=_team_component_key(component),
+                    on_change=_track_team_factors_changed,
                 )
 
     selected_count = len(selected_favorite_players())
@@ -632,6 +722,7 @@ def render_personalization_controls() -> None:
                         f"{player.name} · {get_team_abbr(player.team) or ''}",
                         key=key,
                         disabled=selected_count >= 5 and not checked,
+                        on_change=_track_favorite_players_changed,
                     )
             if selected_count:
                 st.button(
@@ -780,23 +871,83 @@ def _espn_gamecast_url(game_id) -> str:
     return f"https://www.espn.com/nba/game/_/gameId/{gid}"
 
 
-def _watch_chip_html(where_url: str, provider: str) -> str:
+def _analytics_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value)
+
+
+def _link_analytics_attributes(
+    event_name: str,
+    destination_url: str,
+    provider: str,
+    row,
+) -> str:
+    watchability = row.get("aWI")
+    try:
+        watchability = float(watchability)
+        if pd.isna(watchability):
+            watchability = None
+    except (TypeError, ValueError):
+        watchability = None
+
+    properties = {
+        "provider": _analytics_text(provider),
+        "destination_domain": urlparse(destination_url).netloc.lower(),
+        "game_id": _analytics_text(row.get("ESPN game id")),
+        "slate_day": _analytics_text(row.get("Local date")),
+        "matchup": _analytics_text(row.get("Matchup")),
+        "away_team": _analytics_text(row.get("Away team")),
+        "home_team": _analytics_text(row.get("Home team")),
+        "watchability": watchability,
+        "watchability_label": _analytics_text(row.get("Region")),
+    }
+    encoded = py_html.escape(
+        json.dumps(properties, ensure_ascii=True, separators=(",", ":")),
+        quote=True,
+    )
+    return (
+        f" data-analytics-event='{py_html.escape(event_name, quote=True)}'"
+        f" data-analytics-properties='{encoded}'"
+    )
+
+
+def _watch_chip_html(where_url: str, provider: str, row) -> str:
     url = str(where_url or "").strip()
     if not url:
         return ""
     provider_label = str(provider or "").strip() or "League Pass"
+    analytics_attributes = _link_analytics_attributes(
+        "where_to_watch_clicked",
+        url,
+        provider_label,
+        row,
+    )
     return (
-        f"<span class='chip'><a href='{py_html.escape(url)}' target='_blank' rel='noopener noreferrer'>"
+        f"<span class='chip'><a href='{py_html.escape(url)}'{analytics_attributes} "
+        "target='_blank' rel='noopener noreferrer'>"
         f"Where to watch: {py_html.escape(provider_label)}</a></span>"
     )
 
 
-def _follow_chip_html(game_id) -> str:
+def _follow_chip_html(game_id, row) -> str:
     follow_url = _espn_gamecast_url(game_id)
     if not follow_url:
         return ""
+    analytics_attributes = _link_analytics_attributes(
+        "where_to_follow_clicked",
+        follow_url,
+        "ESPN",
+        row,
+    )
     return (
-        f"<span class='chip'><a href='{py_html.escape(follow_url)}' target='_blank' rel='noopener noreferrer'>"
+        f"<span class='chip'><a href='{py_html.escape(follow_url)}'{analytics_attributes} "
+        "target='_blank' rel='noopener noreferrer'>"
         "Where to follow: ESPN</a></span>"
     )
 
@@ -806,8 +957,9 @@ def _chips_for_row_html(row, *, wrap_in_divs: bool) -> str:
     watch_chip = _watch_chip_html(
         str(row.get("Where to watch URL") or ""),
         str(row.get("Where to watch provider") or "") or "League Pass",
+        row,
     )
-    follow_chip = _follow_chip_html(row.get("ESPN game id"))
+    follow_chip = _follow_chip_html(row.get("ESPN game id"), row)
     if watch_chip:
         chips.append(watch_chip)
     if follow_chip:
@@ -1827,12 +1979,16 @@ def render_day_selector(
     if not date_options:
         return None
     default_value = default_day if default_day in date_options else date_options[0]
+    previous_key = "_analytics_previous_dashboard_day"
+    _initialize_previous_widget_value("dashboard_day", previous_key, default_value)
     return st.segmented_control(
         "Day",
         options=date_options,
         format_func=lambda value: date_to_label.get(value, value),
         default=default_value,
         key="dashboard_day",
+        on_change=_track_scalar_widget_change,
+        args=("day_changed", "dashboard_day", previous_key),
     ) or default_value
 
 
@@ -2366,7 +2522,21 @@ def render_table(
     *,
     selected_day: str | None = None,
 ) -> None:
-    sort_mode = st.segmented_control("Sort ↓", options=["Watchability", "Tip time"], default="Watchability")
+    previous_key = "_analytics_previous_dashboard_sort"
+    _initialize_previous_widget_value("dashboard_sort", previous_key, "Watchability")
+    sort_mode = st.segmented_control(
+        "Sort ↓",
+        options=["Watchability", "Tip time"],
+        default="Watchability",
+        key="dashboard_sort",
+        on_change=_track_scalar_widget_change,
+        args=(
+            "sort_changed",
+            "dashboard_sort",
+            previous_key,
+            {"slate_day": selected_day},
+        ),
+    )
     sort_mode = sort_mode or "Watchability"
     today_pt = dt.datetime.now(tz=tz.gettz("America/Los_Angeles")).date()
 
@@ -2494,6 +2664,8 @@ def render_table(
 def render_full_dashboard(title: str, caption: str) -> None:
     inject_base_css()
     inject_autorefresh()
+    initialize_visitor_identity()
+    track_session_started()
 
     st.markdown("<div id='top'></div>", unsafe_allow_html=True)
     st.title(title)
@@ -2512,6 +2684,7 @@ def render_full_dashboard(title: str, caption: str) -> None:
         f"<span class='info-icon' data-tooltip=\"{info_attr}\">i</span></div>",
         unsafe_allow_html=True,
     )
+    track_link_clicks()
     st.markdown("<div class='caption-spacer'></div>", unsafe_allow_html=True)
 
     df, df_dates, date_options, date_to_label = build_dashboard_frames()
@@ -2561,6 +2734,15 @@ def render_full_dashboard(title: str, caption: str) -> None:
     with controls_right:
         render_personalization_controls()
 
+    slate_rows = _pick_slate_df(df, selected)
+    capture_once(
+        "slate_viewed",
+        f"slate_viewed:{selected or 'all'}",
+        {
+            "slate_day": selected,
+            "games_available": int(len(slate_rows)),
+        },
+    )
     left, right = st.columns([1.05, 1.0], gap="large")
     with left:
         selected = render_chart(
@@ -2625,6 +2807,22 @@ def render_full_dashboard(title: str, caption: str) -> None:
     except Exception:
         pass
 
+    privacy_text = py_html.escape(
+        "NBA Watchability uses a random browser-local identifier for anonymous "
+        "product-usage analytics in PostHog. We do not collect names or email "
+        "addresses, use login identity, enrich events with location, or track "
+        "people across devices. Clearing browser storage resets the identifier."
+    )
+    st.markdown(
+        "<div class='analytics-privacy'>"
+        "<span class='analytics-privacy-label' tabindex='0' "
+        "aria-describedby='analytics-privacy-tooltip'>Privacy disclosure ⓘ</span>"
+        f"<span class='analytics-privacy-tooltip' id='analytics-privacy-tooltip' "
+        f"role='tooltip'>{privacy_text}</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
 
 def _apply_session_personalization(df: pd.DataFrame) -> pd.DataFrame:
     favorite_team = selected_favorite_team()
@@ -2663,3 +2861,4 @@ def render_table_page() -> None:
         return
     df = _apply_session_personalization(df)
     render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=None)
+    track_link_clicks()
