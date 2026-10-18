@@ -400,6 +400,36 @@ div[data-testid="collapsedControl"] {display: none;}
 .caption-row {display: inline-flex; align-items: center; gap: 10px;}
 .caption-text {color: rgba(49,51,63,0.6); font-size: 0.9rem; line-height: 1.25;}
 .caption-spacer {height: 14px;}
+.analytics-privacy {position:relative; display:inline-flex; margin-top:6px; font-size:11px; line-height:1.2; color:rgba(49,51,63,.52);}
+.analytics-privacy-label {cursor:help; border-bottom:1px dotted rgba(49,51,63,.32); outline:none;}
+.analytics-privacy-label:focus-visible {color:rgba(49,51,63,.82); border-bottom-color:rgba(49,51,63,.60);}
+.analytics-privacy-tooltip {
+  position:absolute;
+  left:0;
+  bottom:calc(100% + 8px);
+  z-index:9999;
+  width:min(360px, calc(100vw - 48px));
+  visibility:hidden;
+  opacity:0;
+  pointer-events:none;
+  white-space:normal;
+  background:rgba(255,255,255,.98);
+  color:rgba(49,51,63,.95);
+  border:1px solid rgba(49,51,63,.20);
+  box-shadow:0 8px 24px rgba(0,0,0,.10);
+  padding:9px 11px;
+  border-radius:9px;
+  font-size:12px;
+  font-weight:500;
+  line-height:1.35;
+  text-align:left;
+  transition:opacity .12s ease;
+}
+.analytics-privacy-label:hover + .analytics-privacy-tooltip,
+.analytics-privacy-label:focus + .analytics-privacy-tooltip {
+  visibility:visible;
+  opacity:1;
+}
 .info-icon[data-tooltip]:hover::after {
   content: attr(data-tooltip);
   position: absolute;
@@ -2713,9 +2743,20 @@ def render_full_dashboard(title: str, caption: str) -> None:
     except Exception:
         pass
 
-    st.caption(
-        "Anonymous interaction analytics may be collected using a browser-local "
-        "visitor ID. No login, personal profile, or cross-device tracking is used."
+    privacy_text = py_html.escape(
+        "NBA Watchability uses a random browser-local identifier for anonymous "
+        "product-usage analytics in PostHog. We do not collect names or email "
+        "addresses, use login identity, enrich events with location, or track "
+        "people across devices. Clearing browser storage resets the identifier."
+    )
+    st.markdown(
+        "<div class='analytics-privacy'>"
+        "<span class='analytics-privacy-label' tabindex='0' "
+        "aria-describedby='analytics-privacy-tooltip'>Privacy disclosure ⓘ</span>"
+        f"<span class='analytics-privacy-tooltip' id='analytics-privacy-tooltip' "
+        f"role='tooltip'>{privacy_text}</span>"
+        "</div>",
+        unsafe_allow_html=True,
     )
 
 
