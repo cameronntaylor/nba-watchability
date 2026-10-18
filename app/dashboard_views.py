@@ -16,7 +16,12 @@ import requests
 from dateutil import parser as dtparser
 from dateutil import tz
 
-from app.analytics import capture_event, capture_once, track_session_started
+from app.analytics import (
+    capture_event,
+    capture_once,
+    initialize_visitor_identity,
+    track_session_started,
+)
 from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
 from core.standings import _normalize_team_name, get_record, get_win_pct
@@ -2760,6 +2765,7 @@ def render_table(
 def render_full_dashboard(title: str, caption: str) -> None:
     inject_base_css()
     inject_autorefresh()
+    initialize_visitor_identity()
     track_session_started()
 
     st.markdown("<div id='top'></div>", unsafe_allow_html=True)
@@ -2904,8 +2910,8 @@ def render_full_dashboard(title: str, caption: str) -> None:
         pass
 
     st.caption(
-        "Anonymous interaction analytics may be collected to improve the dashboard. "
-        "No login or personal profile is used."
+        "Anonymous interaction analytics may be collected using a browser-local "
+        "visitor ID. No login, personal profile, or cross-device tracking is used."
     )
 
 

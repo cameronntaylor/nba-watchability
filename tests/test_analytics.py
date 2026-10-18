@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -17,9 +18,20 @@ class FakeClient:
 
 
 class AnalyticsTests(unittest.TestCase):
+    visitor_id = "d07878e5-82f4-4a53-8f55-243ef9c51a99"
+
+    def _identity(self, *, visit_number: int = 1) -> dict:
+        return {
+            "visitor_id": self.visitor_id,
+            "visitor_first_seen_at": "2026-10-17T20:15:30.000Z",
+            "visit_number": visit_number,
+            "is_returning_visitor": visit_number > 1,
+            "persistence": "localStorage",
+        }
+
     def test_capture_event_is_anonymous_and_personless(self) -> None:
         client = FakeClient()
-        state: dict = {}
+        state: dict = {analytics.VISITOR_IDENTITY_STATE_KEY: self._identity()}
         with (
             mock.patch.object(analytics, "_posthog_client", return_value=client),
             mock.patch.object(analytics.st, "session_state", state),
@@ -30,14 +42,14 @@ class AnalyticsTests(unittest.TestCase):
 
         event, distinct_id, properties = client.calls[0]
         self.assertEqual(event, "filter_changed")
-        self.assertTrue(distinct_id.startswith("anonymous-session:"))
+        self.assertEqual(distinct_id, f"anonymous-visitor:{self.visitor_id}")
         self.assertIs(properties["$process_person_profile"], False)
-        self.assertIn(properties["$session_id"], distinct_id)
+        self.assertTrue(properties["$session_id"])
         self.assertEqual(properties["teams"], ["Boston Celtics"])
 
     def test_capture_event_normalizes_numpy_and_non_finite_values(self) -> None:
         client = FakeClient()
-        state: dict = {}
+        state: dict = {analytics.VISITOR_IDENTITY_STATE_KEY: self._identity()}
         with (
             mock.patch.object(analytics, "_posthog_client", return_value=client),
             mock.patch.object(analytics.st, "session_state", state),
@@ -53,7 +65,7 @@ class AnalyticsTests(unittest.TestCase):
 
     def test_capture_once_deduplicates_successful_events(self) -> None:
         client = FakeClient()
-        state: dict = {}
+        state: dict = {analytics.VISITOR_IDENTITY_STATE_KEY: self._identity()}
         with (
             mock.patch.object(analytics, "_posthog_client", return_value=client),
             mock.patch.object(analytics.st, "session_state", state),
@@ -63,13 +75,78 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 1)
 
     def test_capture_once_retries_when_analytics_is_unavailable(self) -> None:
-        state: dict = {}
+        state: dict = {analytics.VISITOR_IDENTITY_STATE_KEY: self._identity()}
         with (
             mock.patch.object(analytics, "_posthog_client", return_value=None),
             mock.patch.object(analytics.st, "session_state", state),
         ):
             self.assertFalse(analytics.capture_once("session_started", "session_started"))
         self.assertEqual(state[analytics.CAPTURED_ONCE_KEY], set())
+
+    def test_capture_waits_for_persistent_browser_identity(self) -> None:
+        client = FakeClient()
+        state: dict = {}
+        with (
+            mock.patch.object(analytics, "_posthog_client", return_value=client),
+            mock.patch.object(analytics.st, "session_state", state),
+        ):
+            self.assertFalse(analytics.capture_event("session_started"))
+        self.assertEqual(client.calls, [])
+
+    def test_visitor_identity_validation_rejects_malformed_values(self) -> None:
+        self.assertEqual(
+            analytics._validated_visitor_identity(self._identity(visit_number=2)),
+            self._identity(visit_number=2),
+        )
+        self.assertIsNone(
+            analytics._validated_visitor_identity(
+                {**self._identity(), "visitor_id": "not-a-uuid"}
+            )
+        )
+        self.assertIsNone(
+            analytics._validated_visitor_identity(
+                {**self._identity(), "persistence": "sessionStorage"}
+            )
+        )
+
+    def test_initialize_visitor_identity_bridges_component_state(self) -> None:
+        state: dict = {}
+        component_result = SimpleNamespace(identity=self._identity(visit_number=2))
+        with (
+            mock.patch.object(
+                analytics,
+                "_visitor_identity_component",
+                return_value=component_result,
+            ) as component,
+            mock.patch.object(analytics.st, "session_state", state),
+        ):
+            identity = analytics.initialize_visitor_identity()
+
+        self.assertEqual(identity, self._identity(visit_number=2))
+        self.assertEqual(
+            state[analytics.VISITOR_IDENTITY_STATE_KEY],
+            self._identity(visit_number=2),
+        )
+        self.assertEqual(
+            component.call_args.kwargs["data"]["session_id"],
+            state[analytics.SESSION_ID_KEY],
+        )
+
+    def test_session_started_marks_return_visits(self) -> None:
+        client = FakeClient()
+        state: dict = {
+            analytics.VISITOR_IDENTITY_STATE_KEY: self._identity(visit_number=3)
+        }
+        with (
+            mock.patch.object(analytics, "_posthog_client", return_value=client),
+            mock.patch.object(analytics.st, "session_state", state),
+        ):
+            self.assertTrue(analytics.track_session_started())
+
+        properties = client.calls[0][2]
+        self.assertEqual(properties["identity_scope"], "anonymous_browser")
+        self.assertIs(properties["is_returning_visitor"], True)
+        self.assertEqual(properties["visit_number"], 3)
 
 
 if __name__ == "__main__":

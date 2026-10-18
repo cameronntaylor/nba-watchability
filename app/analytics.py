@@ -15,6 +15,72 @@ DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com"
 ANALYTICS_SCHEMA_VERSION = 1
 SESSION_ID_KEY = "_analytics_session_id"
 CAPTURED_ONCE_KEY = "_analytics_captured_once"
+VISITOR_IDENTITY_COMPONENT_KEY = "_analytics_visitor_identity_component"
+VISITOR_IDENTITY_STATE_KEY = "_analytics_visitor_identity"
+
+_VISITOR_IDENTITY_JS = r"""
+export default function(component) {
+    const { data, parentElement, setStateValue } = component;
+    const sessionId = data?.session_id;
+    if (!sessionId) return;
+
+    const visitorIdKey = "nba_watchability_visitor_id_v1";
+    const firstSeenKey = "nba_watchability_visitor_first_seen_v1";
+    const visitNumberKey = "nba_watchability_visit_number_v1";
+    const lastSessionKey = "nba_watchability_last_session_id_v1";
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    try {
+        let visitorId = window.localStorage.getItem(visitorIdKey);
+        if (!visitorId || !uuidPattern.test(visitorId)) {
+            visitorId = window.crypto.randomUUID();
+            window.localStorage.setItem(visitorIdKey, visitorId);
+        }
+
+        let firstSeenAt = window.localStorage.getItem(firstSeenKey);
+        if (!firstSeenAt) {
+            firstSeenAt = new Date().toISOString();
+            window.localStorage.setItem(firstSeenKey, firstSeenAt);
+        }
+
+        let visitNumber = Number.parseInt(
+            window.localStorage.getItem(visitNumberKey) || "0",
+            10,
+        );
+        if (!Number.isFinite(visitNumber) || visitNumber < 0) visitNumber = 0;
+
+        const lastSessionId = window.localStorage.getItem(lastSessionKey);
+        if (lastSessionId !== sessionId) {
+            visitNumber += 1;
+            window.localStorage.setItem(visitNumberKey, String(visitNumber));
+            window.localStorage.setItem(lastSessionKey, sessionId);
+        }
+
+        const identity = {
+            visitor_id: visitorId,
+            visitor_first_seen_at: firstSeenAt,
+            visit_number: Math.max(visitNumber, 1),
+            is_returning_visitor: visitNumber > 1,
+            persistence: "localStorage",
+        };
+        const serialized = JSON.stringify(identity);
+        if (parentElement.__nbaWatchabilityAnalyticsIdentity !== serialized) {
+            parentElement.__nbaWatchabilityAnalyticsIdentity = serialized;
+            setStateValue("identity", identity);
+        }
+    } catch (_error) {
+        // If browser storage is unavailable, analytics stays disabled. This
+        // avoids silently turning a session ID into a misleading visitor ID.
+    }
+}
+"""
+
+_visitor_identity_component = st.components.v2.component(
+    "nba_watchability_visitor_identity",
+    html="<span aria-hidden='true'></span>",
+    css=":host { display: none; }",
+    js=_VISITOR_IDENTITY_JS,
+)
 
 
 def _secret_value(key: str) -> str | None:
@@ -80,6 +146,53 @@ def session_id() -> str:
     return str(value)
 
 
+def _validated_visitor_identity(value: Any) -> dict[str, Any] | None:
+    """Return a safe browser identity payload or None for malformed state."""
+
+    if not isinstance(value, Mapping):
+        return None
+    try:
+        visitor_id = str(uuid.UUID(str(value.get("visitor_id", ""))))
+        visitor_first_seen_at = str(value["visitor_first_seen_at"])
+        dt.datetime.fromisoformat(visitor_first_seen_at.replace("Z", "+00:00"))
+        visit_number = int(value["visit_number"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if visit_number < 1 or value.get("persistence") != "localStorage":
+        return None
+    return {
+        "visitor_id": visitor_id,
+        "visitor_first_seen_at": visitor_first_seen_at,
+        "visit_number": visit_number,
+        "is_returning_visitor": visit_number > 1,
+        "persistence": "localStorage",
+    }
+
+
+def initialize_visitor_identity() -> dict[str, Any] | None:
+    """Load or create the persistent anonymous browser ID used by analytics."""
+
+    result = _visitor_identity_component(
+        key=VISITOR_IDENTITY_COMPONENT_KEY,
+        data={"session_id": session_id()},
+        default={"identity": None},
+        height=0,
+        on_identity_change=lambda: None,
+    )
+    identity = _validated_visitor_identity(getattr(result, "identity", None))
+    if identity is None:
+        st.session_state.pop(VISITOR_IDENTITY_STATE_KEY, None)
+        return None
+    st.session_state[VISITOR_IDENTITY_STATE_KEY] = identity
+    return identity
+
+
+def visitor_identity() -> dict[str, Any] | None:
+    """Return the validated identity previously supplied by the browser."""
+
+    return _validated_visitor_identity(st.session_state.get(VISITOR_IDENTITY_STATE_KEY))
+
+
 def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
         return value
@@ -110,8 +223,9 @@ def _clean_properties(properties: Mapping[str, Any] | None) -> dict[str, Any]:
 def capture_event(event: str, properties: Mapping[str, Any] | None = None) -> bool:
     """Queue one anonymous event; analytics must never break the dashboard."""
 
+    identity = visitor_identity()
     client = _posthog_client()
-    if client is None:
+    if identity is None or client is None:
         return False
 
     anonymous_session_id = session_id()
@@ -125,7 +239,7 @@ def capture_event(event: str, properties: Mapping[str, Any] | None = None) -> bo
     try:
         client.capture(
             event,
-            distinct_id=f"anonymous-session:{anonymous_session_id}",
+            distinct_id=f"anonymous-visitor:{identity['visitor_id']}",
             properties=payload,
         )
         return True
@@ -153,11 +267,18 @@ def capture_once(
 
 
 def track_session_started() -> bool:
+    identity = visitor_identity()
+    if identity is None:
+        return False
     return capture_once(
         "session_started",
         "session_started",
         {
-            "identity_scope": "streamlit_session",
+            "identity_scope": "anonymous_browser",
             "authentication_required": False,
+            "is_returning_visitor": identity["is_returning_visitor"],
+            "visit_number": identity["visit_number"],
+            "visitor_first_seen_at": identity["visitor_first_seen_at"],
+            "visitor_persistence": identity["persistence"],
         },
     )
