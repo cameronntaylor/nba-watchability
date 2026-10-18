@@ -34,8 +34,6 @@ key to this app.
 | `slate_viewed` | First view of each slate day in a session | `slate_day`, `games_available` |
 | `day_changed` | User changes the day selector | `previous_value`, `new_value` |
 | `sort_changed` | User changes All Games sorting | `previous_value`, `new_value`, `slate_day` |
-| `filter_changed` | Team, timing, or minimum-score filter changes | `changed_filters`, `teams`, `timing`, `minimum_watchability`, `slate_day`, `results_before`, `results_after`, `zero_results` |
-| `game_selected` | User clicks a game in the landscape chart | `game_id`, `slate_day`, `matchup`, `away_team`, `home_team`, `watchability`, `watchability_label` |
 | `team_view_changed` | User changes League Pass/team-fan view | `previous_value`, `new_value` |
 | `favorite_players_changed` | User changes favorite-player choices | `favorite_players`, `favorite_player_count` |
 | `team_factors_changed` | User changes team-fan score factors | `team_factors`, `team_factor_count` |
@@ -66,8 +64,8 @@ visitor.
 1. Open the deployed NBA Watchability app in a private/incognito window.
 2. In PostHog, open **Activity** or **Live events**.
 3. Look for `session_started` and `slate_viewed`.
-4. Change a filter and click a game in the landscape chart. Confirm
-   `filter_changed` and `game_selected` appear.
+4. Change the selected day, sorting, or an existing personalization control.
+   Confirm the corresponding change event appears.
 5. Open an event to inspect its properties. Check that its distinct ID begins
    with `anonymous-visitor:`, `$session_id` is present, and
    `$process_person_profile` is `false`.
@@ -134,30 +132,11 @@ because these events deliberately remain anonymous/personless.
 
 1. Add a new **Funnel** insight.
 2. Use `slate_viewed` as step 1.
-3. Use `game_selected` as step 2.
+3. Use `day_changed` as step 2.
 4. Choose a conversion window appropriate for a visit, such as one hour.
-5. Name it `Slate view → game selected`.
+5. Name it `Slate view → another day selected`.
 
-This answers what share of slate-viewing sessions click a specific game.
-
-#### Filter adoption
-
-Create a second funnel with `session_started` followed by `filter_changed` and
-name it `Session → filter used`.
-
-#### Zero-result filters
-
-1. Create a **Trends** insight for `filter_changed`.
-2. Add an event-property filter where `zero_results` equals `true`.
-3. Show total events and name it `Zero-result filter changes`.
-4. Duplicate the series without the property filter if you want the failed and
-   total filter-change counts side by side.
-
-#### Popular games
-
-1. Create a **Trends** insight for `game_selected`.
-2. Add a breakdown by the `matchup` event property.
-3. Use a bar chart and name it `Most-selected games`.
+This answers what share of slate-viewing sessions explore another day.
 
 #### Control usage
 
@@ -165,7 +144,6 @@ Create a Trends insight with these events as separate series:
 
 - `day_changed`
 - `sort_changed`
-- `filter_changed`
 - `team_view_changed`
 - `favorite_players_changed`
 - `team_factors_changed`
@@ -177,11 +155,9 @@ Name it `Interaction mix`. This shows which controls people actually use.
 Click the filter control beside an event series to restrict an insight by an
 event property. Useful examples include:
 
-- `filter_changed.changed_filters` to compare team, timing, and score filters
-- `filter_changed.timing` to compare Live, Starting soon, and Later
 - `sort_changed.new_value` to compare Watchability and Tip time
 - `team_view_changed.new_value` to see selected fan views
-- `game_selected.watchability_label` to compare Must Watch through Hard Skip
+- `day_changed.new_value` to compare explored slate days
 
 Use a breakdown when you want PostHog to create one series or bar per property
 value. Use a filter when you only want a specific subset.
@@ -197,12 +173,10 @@ value. Use a filter when you only want a specific subset.
 - Because this is not fingerprinting or login-based identity, cross-device
   deduplication is intentionally impossible.
 - `slate_viewed` is deduplicated once per slate day within a session.
-- A chart selection is tracked when the selected game changes; ordinary hovers
-  are not tracked.
 - PostHog will not show useful geographic or person-profile analysis because
   this integration deliberately disables both.
 - Look at several days of traffic before drawing conclusions from low-volume
-  filter or game-selection rates.
+  interaction rates.
 
 ### 6. Save and maintain insights
 

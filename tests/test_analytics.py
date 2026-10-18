@@ -37,15 +37,15 @@ class AnalyticsTests(unittest.TestCase):
             mock.patch.object(analytics.st, "session_state", state),
         ):
             self.assertTrue(
-                analytics.capture_event("filter_changed", {"teams": ("Boston Celtics",)})
+                analytics.capture_event("sort_changed", {"new_value": "Tip time"})
             )
 
         event, distinct_id, properties = client.calls[0]
-        self.assertEqual(event, "filter_changed")
+        self.assertEqual(event, "sort_changed")
         self.assertEqual(distinct_id, f"anonymous-visitor:{self.visitor_id}")
         self.assertIs(properties["$process_person_profile"], False)
         self.assertTrue(properties["$session_id"])
-        self.assertEqual(properties["teams"], ["Boston Celtics"])
+        self.assertEqual(properties["new_value"], "Tip time")
 
     def test_capture_event_normalizes_numpy_and_non_finite_values(self) -> None:
         client = FakeClient()
@@ -55,7 +55,7 @@ class AnalyticsTests(unittest.TestCase):
             mock.patch.object(analytics.st, "session_state", state),
         ):
             analytics.capture_event(
-                "game_selected",
+                "slate_viewed",
                 {"watchability": np.float64(88.4), "missing_score": float("nan")},
             )
 

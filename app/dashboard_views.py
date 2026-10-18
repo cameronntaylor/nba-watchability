@@ -1899,156 +1899,6 @@ def render_day_selector(
     ) or default_value
 
 
-FILTER_TIMING_OPTIONS = ("All games", "Live now", "Starting in 2 hours", "Later")
-
-
-def filter_dashboard_games(
-    df: pd.DataFrame,
-    *,
-    teams: list[str] | tuple[str, ...] | None = None,
-    timing: str = "All games",
-    minimum_watchability: int = 0,
-    now_pt: dt.datetime | None = None,
-) -> pd.DataFrame:
-    """Apply user-facing slate filters without mutating the source dataframe."""
-
-    if df is None or df.empty:
-        return df.copy() if df is not None else pd.DataFrame()
-
-    out = df.copy()
-    selected_teams = {_normalize_team_name(str(team)) for team in (teams or [])}
-    if selected_teams and {"Away team", "Home team"}.issubset(out.columns):
-        away = out["Away team"].astype(str).map(_normalize_team_name)
-        home = out["Home team"].astype(str).map(_normalize_team_name)
-        out = out[away.isin(selected_teams) | home.isin(selected_teams)].copy()
-
-    if minimum_watchability and "aWI" in out.columns:
-        score = pd.to_numeric(out["aWI"], errors="coerce")
-        out = out[score >= float(minimum_watchability)].copy()
-
-    if timing != "All games" and not out.empty:
-        status = (
-            out["Status"].astype(str).str.strip().str.lower()
-            if "Status" in out.columns
-            else pd.Series("pre", index=out.index, dtype=object)
-        )
-        is_live = status.eq("in")
-        if "Is live" in out.columns:
-            is_live |= _coerce_bool_series(out["Is live"], default=False)
-
-        if timing == "Live now":
-            keep = is_live
-        else:
-            now_pt = now_pt or dt.datetime.now(tz=tz.gettz("America/Los_Angeles"))
-            two_hours_from_now = now_pt + dt.timedelta(hours=2)
-
-            def _tip_bucket(value) -> str:
-                tip = _to_valid_datetime(value)
-                if tip is None:
-                    return "unknown"
-                if tip.tzinfo is None:
-                    tip = tip.replace(tzinfo=tz.gettz("America/Los_Angeles"))
-                if now_pt <= tip < two_hours_from_now:
-                    return "soon"
-                if tip >= two_hours_from_now:
-                    return "later"
-                return "past"
-
-            if "Tip dt (PT)" in out.columns:
-                bucket = out["Tip dt (PT)"].apply(_tip_bucket)
-            else:
-                bucket = pd.Series("unknown", index=out.index, dtype=object)
-            desired_bucket = "soon" if timing == "Starting in 2 hours" else "later"
-            keep = (~is_live) & bucket.eq(desired_bucket)
-        out = out[keep.fillna(False)].copy()
-
-    return out.reset_index(drop=True)
-
-
-def _available_team_filters(df: pd.DataFrame) -> list[str]:
-    teams: set[str] = set()
-    for column in ("Away team", "Home team"):
-        if column in df.columns:
-            teams.update(str(value) for value in df[column].dropna().tolist() if str(value).strip())
-    return sorted(teams)
-
-
-def render_slate_filters(df: pd.DataFrame, *, selected_day: str | None) -> pd.DataFrame:
-    st.markdown("**Refine this slate**")
-    team_col, timing_col, score_col = st.columns([1.5, 1.0, 1.0], gap="small")
-    with team_col:
-        selected_teams = st.multiselect(
-            "Teams",
-            options=_available_team_filters(df),
-            key="dashboard_team_filter",
-        )
-    with timing_col:
-        selected_timing = st.selectbox(
-            "Status / time",
-            options=FILTER_TIMING_OPTIONS,
-            key="dashboard_timing_filter",
-        )
-    with score_col:
-        minimum_watchability = st.slider(
-            "Minimum watchability",
-            min_value=0,
-            max_value=100,
-            value=0,
-            step=10,
-            key="dashboard_minimum_watchability",
-        )
-
-    filtered = filter_dashboard_games(
-        df,
-        teams=selected_teams,
-        timing=selected_timing,
-        minimum_watchability=minimum_watchability,
-    )
-    before_count = len(_pick_slate_df(df, selected_day))
-    after_count = len(_pick_slate_df(filtered, selected_day))
-    st.caption(f"Showing {after_count} of {before_count} games for this day.")
-
-    current_state = {
-        "teams": tuple(selected_teams),
-        "timing": selected_timing,
-        "minimum_watchability": int(minimum_watchability),
-    }
-    previous_state = st.session_state.get("_analytics_previous_filter_state")
-    st.session_state["_analytics_previous_filter_state"] = current_state
-    if isinstance(previous_state, dict) and previous_state != current_state:
-        changed_filters = [
-            key for key, value in current_state.items() if previous_state.get(key) != value
-        ]
-        capture_event(
-            "filter_changed",
-            {
-                "changed_filters": changed_filters,
-                "teams": list(selected_teams),
-                "timing": selected_timing,
-                "minimum_watchability": int(minimum_watchability),
-                "slate_day": selected_day,
-                "results_before": before_count,
-                "results_after": after_count,
-                "zero_results": after_count == 0,
-            },
-        )
-    return filtered
-
-
-def _selected_chart_game_id(event) -> str | None:
-    try:
-        selection = event.get("selection", {})
-        game_selection = selection.get("game_selection", {})
-    except Exception:
-        return None
-    if not isinstance(game_selection, dict):
-        return None
-    value = game_selection.get("_analytics_game_id")
-    if isinstance(value, list):
-        value = value[0] if value else None
-    return str(value) if value else None
-
-
 def render_chart(
     df: pd.DataFrame,
     date_options: list[str],
@@ -2095,17 +1945,6 @@ def render_chart(
         else:
             selected = selected_date if selected_date in date_options else date_options[0]
         df_plot = df[df["Local date"].astype(str) == selected].copy()
-
-    df_plot["_analytics_game_id"] = df_plot.apply(
-        lambda row: "|".join(
-            [
-                str(selected or row.get("Local date") or ""),
-                _normalize_team_name(str(row.get("Away team", ""))),
-                _normalize_team_name(str(row.get("Home team", ""))),
-            ]
-        ),
-        axis=1,
-    )
 
     chart_date_str = _fmt_m_d_yy_from_iso(selected)
 
@@ -2363,7 +2202,6 @@ def render_chart(
     away_points = df_plot.assign(_x=(df_plot["Team quality"] - dx).clip(0, 1), _logo=df_plot["Away logo"])
     home_points = df_plot.assign(_x=(df_plot["Team quality"] + dx).clip(0, 1), _logo=df_plot["Home logo"])
     tooltip_cols = [
-        "_analytics_game_id",
         "Matchup",
         "Tip short",
         "Tip (PT)",
@@ -2464,39 +2302,7 @@ def render_chart(
             dy=4,
         ),
     )
-    game_selection = alt.selection_point(
-        name="game_selection",
-        fields=["_analytics_game_id"],
-        on="click",
-        clear="dblclick",
-    )
-    chart = chart.add_params(game_selection)
-    event = st.altair_chart(
-        chart,
-        use_container_width=True,
-        key=f"watchability_landscape_{selected or 'all'}",
-        on_select="rerun",
-        selection_mode="game_selection",
-    )
-    selected_game_id = _selected_chart_game_id(event)
-    previous_game_id = st.session_state.get("_analytics_previous_chart_game_id")
-    st.session_state["_analytics_previous_chart_game_id"] = selected_game_id
-    if selected_game_id and selected_game_id != previous_game_id:
-        selected_rows = df_plot[df_plot["_analytics_game_id"] == selected_game_id]
-        if not selected_rows.empty:
-            game = selected_rows.iloc[0]
-            capture_event(
-                "game_selected",
-                {
-                    "game_id": selected_game_id,
-                    "slate_day": selected,
-                    "matchup": game.get("Matchup"),
-                    "away_team": game.get("Away team"),
-                    "home_team": game.get("Home team"),
-                    "watchability": game.get("aWI"),
-                    "watchability_label": game.get("Region"),
-                },
-            )
+    st.altair_chart(chart, use_container_width=True)
     return selected
 
 
@@ -2843,8 +2649,6 @@ def render_full_dashboard(title: str, caption: str) -> None:
             "games_available": int(len(slate_rows)),
         },
     )
-    df = render_slate_filters(df, selected_day=selected)
-
     left, right = st.columns([1.05, 1.0], gap="large")
     with left:
         selected = render_chart(
