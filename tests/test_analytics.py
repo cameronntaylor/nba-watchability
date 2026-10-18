@@ -148,6 +148,61 @@ class AnalyticsTests(unittest.TestCase):
         self.assertIs(properties["is_returning_visitor"], True)
         self.assertEqual(properties["visit_number"], 3)
 
+    def test_link_click_trigger_captures_whitelisted_event_once(self) -> None:
+        state: dict = {analytics.VISITOR_IDENTITY_STATE_KEY: self._identity()}
+        component_result = SimpleNamespace(
+            link_click={
+                "click_id": "click-123",
+                "event_name": "where_to_watch_clicked",
+                "properties": {
+                    "provider": "League Pass",
+                    "matchup": "Boston Celtics @ Detroit Pistons",
+                    "surface": "recommendation",
+                },
+            }
+        )
+        with (
+            mock.patch.object(
+                analytics,
+                "_link_click_component",
+                return_value=component_result,
+            ),
+            mock.patch.object(analytics.st, "session_state", state),
+            mock.patch.object(analytics, "capture_event", return_value=True) as capture,
+        ):
+            self.assertTrue(analytics.track_link_clicks())
+            self.assertFalse(analytics.track_link_clicks())
+
+        capture.assert_called_once_with(
+            "where_to_watch_clicked",
+            {
+                "provider": "League Pass",
+                "matchup": "Boston Celtics @ Detroit Pistons",
+                "surface": "recommendation",
+            },
+        )
+
+    def test_link_click_trigger_rejects_unexpected_event_name(self) -> None:
+        state: dict = {analytics.VISITOR_IDENTITY_STATE_KEY: self._identity()}
+        component_result = SimpleNamespace(
+            link_click={
+                "click_id": "click-456",
+                "event_name": "unapproved_event",
+                "properties": {},
+            }
+        )
+        with (
+            mock.patch.object(
+                analytics,
+                "_link_click_component",
+                return_value=component_result,
+            ),
+            mock.patch.object(analytics.st, "session_state", state),
+            mock.patch.object(analytics, "capture_event") as capture,
+        ):
+            self.assertFalse(analytics.track_link_clicks())
+        capture.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

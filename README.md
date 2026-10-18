@@ -6,9 +6,9 @@ https://x.com/NBAWhatToWatch
 ## Anonymous analytics
 
 The dashboard supports optional, anonymous PostHog product analytics for repeat
-visits, slate views, and changes to existing day, sort, and personalization
-controls. It runs normally when analytics is not configured. Setup details are in
-[`docs/analytics.md`](docs/analytics.md).
+visits, slate views, changes to existing day, sort, and personalization controls,
+and outbound watch/follow link clicks. It runs normally when analytics is not
+configured. Setup details are in [`docs/analytics.md`](docs/analytics.md).
 
 ## Season-transition strategy
 

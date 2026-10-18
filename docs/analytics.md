@@ -37,6 +37,8 @@ key to this app.
 | `team_view_changed` | User changes League Pass/team-fan view | `previous_value`, `new_value` |
 | `favorite_players_changed` | User changes favorite-player choices | `favorite_players`, `favorite_player_count` |
 | `team_factors_changed` | User changes team-fan score factors | `team_factors`, `team_factor_count` |
+| `where_to_watch_clicked` | User opens a Where to watch link | `provider`, `destination_domain`, `surface`, `game_id`, `slate_day`, `matchup`, teams, watchability score and label |
+| `where_to_follow_clicked` | User opens a Where to follow link | `provider`, `destination_domain`, `surface`, `game_id`, `slate_day`, `matchup`, teams, watchability score and label |
 
 Every event also includes:
 
@@ -66,7 +68,9 @@ visitor.
 3. Look for `session_started` and `slate_viewed`.
 4. Change the selected day, sorting, or an existing personalization control.
    Confirm the corresponding change event appears.
-5. Open an event to inspect its properties. Check that its distinct ID begins
+5. Click a **Where to watch** and **Where to follow** link. Confirm
+   `where_to_watch_clicked` and `where_to_follow_clicked` appear.
+6. Open an event to inspect its properties. Check that its distinct ID begins
    with `anonymous-visitor:`, `$session_id` is present, and
    `$process_person_profile` is `false`.
 
@@ -138,6 +142,17 @@ because these events deliberately remain anonymous/personless.
 
 This answers what share of slate-viewing sessions explore another day.
 
+#### Outbound viewing intent
+
+1. Create a **Trends** insight with `where_to_watch_clicked` and
+   `where_to_follow_clicked` as separate series.
+2. Use **Total count** and add a breakdown by `provider` or `surface`.
+3. Name it `Where-to-watch and follow clicks`.
+
+For a conversion-style view, create a funnel from `slate_viewed` to
+`where_to_watch_clicked`. This measures the share of slate viewers who continue
+to a viewing destination.
+
 #### Control usage
 
 Create a Trends insight with these events as separate series:
@@ -158,6 +173,9 @@ event property. Useful examples include:
 - `sort_changed.new_value` to compare Watchability and Tip time
 - `team_view_changed.new_value` to see selected fan views
 - `day_changed.new_value` to compare explored slate days
+- `where_to_watch_clicked.provider` to compare viewing services
+- `where_to_watch_clicked.surface` to compare recommendations with All Games
+- either outbound event's `matchup` to see which games drive intent
 
 Use a breakdown when you want PostHog to create one series or bar per property
 value. Use a filter when you only want a specific subset.
@@ -173,6 +191,8 @@ value. Use a filter when you only want a specific subset.
 - Because this is not fingerprinting or login-based identity, cross-device
   deduplication is intentionally impossible.
 - `slate_viewed` is deduplicated once per slate day within a session.
+- Outbound link clicks are counted individually. Repeated clicks by one visitor
+  therefore produce repeated events.
 - PostHog will not show useful geographic or person-profile analysis because
   this integration deliberately disables both.
 - Look at several days of traffic before drawing conclusions from low-volume

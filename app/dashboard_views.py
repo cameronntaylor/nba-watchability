@@ -8,6 +8,7 @@ import datetime as dt
 import textwrap
 import concurrent.futures as cf
 from typing import Tuple, Dict, List
+from urllib.parse import urlparse
 
 import altair as alt
 import pandas as pd
@@ -20,6 +21,7 @@ from app.analytics import (
     capture_event,
     capture_once,
     initialize_visitor_identity,
+    track_link_clicks,
     track_session_started,
 )
 from core.odds_api import fetch_nba_spreads_window
@@ -869,23 +871,83 @@ def _espn_gamecast_url(game_id) -> str:
     return f"https://www.espn.com/nba/game/_/gameId/{gid}"
 
 
-def _watch_chip_html(where_url: str, provider: str) -> str:
+def _analytics_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    return str(value)
+
+
+def _link_analytics_attributes(
+    event_name: str,
+    destination_url: str,
+    provider: str,
+    row,
+) -> str:
+    watchability = row.get("aWI")
+    try:
+        watchability = float(watchability)
+        if pd.isna(watchability):
+            watchability = None
+    except (TypeError, ValueError):
+        watchability = None
+
+    properties = {
+        "provider": _analytics_text(provider),
+        "destination_domain": urlparse(destination_url).netloc.lower(),
+        "game_id": _analytics_text(row.get("ESPN game id")),
+        "slate_day": _analytics_text(row.get("Local date")),
+        "matchup": _analytics_text(row.get("Matchup")),
+        "away_team": _analytics_text(row.get("Away team")),
+        "home_team": _analytics_text(row.get("Home team")),
+        "watchability": watchability,
+        "watchability_label": _analytics_text(row.get("Region")),
+    }
+    encoded = py_html.escape(
+        json.dumps(properties, ensure_ascii=True, separators=(",", ":")),
+        quote=True,
+    )
+    return (
+        f" data-analytics-event='{py_html.escape(event_name, quote=True)}'"
+        f" data-analytics-properties='{encoded}'"
+    )
+
+
+def _watch_chip_html(where_url: str, provider: str, row) -> str:
     url = str(where_url or "").strip()
     if not url:
         return ""
     provider_label = str(provider or "").strip() or "League Pass"
+    analytics_attributes = _link_analytics_attributes(
+        "where_to_watch_clicked",
+        url,
+        provider_label,
+        row,
+    )
     return (
-        f"<span class='chip'><a href='{py_html.escape(url)}' target='_blank' rel='noopener noreferrer'>"
+        f"<span class='chip'><a href='{py_html.escape(url)}'{analytics_attributes} "
+        "target='_blank' rel='noopener noreferrer'>"
         f"Where to watch: {py_html.escape(provider_label)}</a></span>"
     )
 
 
-def _follow_chip_html(game_id) -> str:
+def _follow_chip_html(game_id, row) -> str:
     follow_url = _espn_gamecast_url(game_id)
     if not follow_url:
         return ""
+    analytics_attributes = _link_analytics_attributes(
+        "where_to_follow_clicked",
+        follow_url,
+        "ESPN",
+        row,
+    )
     return (
-        f"<span class='chip'><a href='{py_html.escape(follow_url)}' target='_blank' rel='noopener noreferrer'>"
+        f"<span class='chip'><a href='{py_html.escape(follow_url)}'{analytics_attributes} "
+        "target='_blank' rel='noopener noreferrer'>"
         "Where to follow: ESPN</a></span>"
     )
 
@@ -895,8 +957,9 @@ def _chips_for_row_html(row, *, wrap_in_divs: bool) -> str:
     watch_chip = _watch_chip_html(
         str(row.get("Where to watch URL") or ""),
         str(row.get("Where to watch provider") or "") or "League Pass",
+        row,
     )
-    follow_chip = _follow_chip_html(row.get("ESPN game id"))
+    follow_chip = _follow_chip_html(row.get("ESPN game id"), row)
     if watch_chip:
         chips.append(watch_chip)
     if follow_chip:
@@ -2621,6 +2684,7 @@ def render_full_dashboard(title: str, caption: str) -> None:
         f"<span class='info-icon' data-tooltip=\"{info_attr}\">i</span></div>",
         unsafe_allow_html=True,
     )
+    track_link_clicks()
     st.markdown("<div class='caption-spacer'></div>", unsafe_allow_html=True)
 
     df, df_dates, date_options, date_to_label = build_dashboard_frames()
@@ -2797,3 +2861,4 @@ def render_table_page() -> None:
         return
     df = _apply_session_personalization(df)
     render_table(df=df, df_dates=df_dates, date_options=date_options, selected_day=None)
+    track_link_clicks()

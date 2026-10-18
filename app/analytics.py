@@ -17,6 +17,9 @@ SESSION_ID_KEY = "_analytics_session_id"
 CAPTURED_ONCE_KEY = "_analytics_captured_once"
 VISITOR_IDENTITY_COMPONENT_KEY = "_analytics_visitor_identity_component"
 VISITOR_IDENTITY_STATE_KEY = "_analytics_visitor_identity"
+LINK_CLICK_COMPONENT_KEY = "_analytics_link_click_component"
+LAST_LINK_CLICK_ID_KEY = "_analytics_last_link_click_id"
+LINK_CLICK_EVENTS = frozenset({"where_to_watch_clicked", "where_to_follow_clicked"})
 
 _VISITOR_IDENTITY_JS = r"""
 export default function(component) {
@@ -80,6 +83,44 @@ _visitor_identity_component = st.components.v2.component(
     html="<span aria-hidden='true'></span>",
     css=":host { display: none; }",
     js=_VISITOR_IDENTITY_JS,
+)
+
+_LINK_CLICK_JS = r"""
+export default function(component) {
+    const { setTriggerValue } = component;
+    const handleClick = (clickEvent) => {
+        const link = clickEvent.target?.closest?.("a[data-analytics-event]");
+        if (!link) return;
+
+        let properties = {};
+        try {
+            properties = JSON.parse(link.dataset.analyticsProperties || "{}");
+        } catch (_error) {
+            properties = {};
+        }
+        properties.surface = link.closest(".menu-row")
+            ? "all_games"
+            : (link.closest(".rec-card") ? "recommendation" : "unknown");
+
+        const clickId = window.crypto?.randomUUID?.()
+            || `${Date.now()}-${Math.random()}`;
+        setTriggerValue("link_click", {
+            click_id: clickId,
+            event_name: link.dataset.analyticsEvent,
+            properties,
+        });
+    };
+
+    document.addEventListener("click", handleClick, true);
+    return () => document.removeEventListener("click", handleClick, true);
+}
+"""
+
+_link_click_component = st.components.v2.component(
+    "nba_watchability_link_clicks",
+    html="<span aria-hidden='true'></span>",
+    css=":host { display: none; }",
+    js=_LINK_CLICK_JS,
 )
 
 
@@ -282,3 +323,31 @@ def track_session_started() -> bool:
             "visitor_persistence": identity["persistence"],
         },
     )
+
+
+def track_link_clicks() -> bool:
+    """Capture marked watch/follow link clicks without changing link behavior."""
+
+    result = _link_click_component(
+        key=LINK_CLICK_COMPONENT_KEY,
+        height=0,
+        on_link_click_change=lambda: None,
+    )
+    payload = getattr(result, "link_click", None)
+    if not isinstance(payload, Mapping):
+        return False
+
+    click_id = str(payload.get("click_id") or "")
+    event_name = str(payload.get("event_name") or "")
+    properties = payload.get("properties")
+    if (
+        not click_id
+        or event_name not in LINK_CLICK_EVENTS
+        or not isinstance(properties, Mapping)
+    ):
+        return False
+    if st.session_state.get(LAST_LINK_CLICK_ID_KEY) == click_id:
+        return False
+
+    st.session_state[LAST_LINK_CLICK_ID_KEY] = click_id
+    return capture_event(event_name, properties)
