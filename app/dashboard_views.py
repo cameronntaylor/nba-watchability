@@ -160,16 +160,19 @@ def _filter_displayable_dashboard_rows(df: pd.DataFrame) -> pd.DataFrame:
     return d.loc[keep].reset_index(drop=True)
 
 
-@st.cache_data(ttl=60 * 60 * 24, show_spinner="Refreshing player ratings…")
+@st.cache_data(ttl=60 * 60, show_spinner="Refreshing player ratings…")
 def _load_player_impacts_for_watchability(
     team_names: tuple[str, ...],
 ) -> dict[str, list[PlayerImpact]]:
-    """Load slow-changing roster/stat inputs independently of live game data."""
+    """Load current-season ratings hourly so early-season stats appear promptly."""
 
     def _fetch(team_name: str) -> tuple[str, list[PlayerImpact]]:
         team_key = _normalize_team_name(team_name)
         try:
-            return team_key, compute_team_player_impacts(team_name)
+            return team_key, compute_team_player_impacts(
+                team_name,
+                stats_ttl_seconds=60 * 60,
+            )
         except Exception:
             return team_key, []
 
