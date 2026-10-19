@@ -205,6 +205,65 @@ class PlayerImpact:
     injury_weight: float
 
 
+def blend_player_impact_shares(
+    prior_players: Iterable[PlayerImpact],
+    current_players: Iterable[PlayerImpact],
+    *,
+    current_weight: float,
+) -> List[PlayerImpact]:
+    """Blend prior- and current-season player impact shares.
+
+    The blend is keyed by ESPN athlete id so players who only appear in one
+    season receive a zero share from the other season. If either season has no
+    usable player data, keep the available season intact rather than diluting
+    its shares with missing data.
+    """
+    prior_by_id = {str(player.athlete_id): player for player in prior_players}
+    current_by_id = {str(player.athlete_id): player for player in current_players}
+
+    if not prior_by_id:
+        return list(current_by_id.values())
+    if not current_by_id:
+        return list(prior_by_id.values())
+
+    alpha = max(0.0, min(1.0, float(current_weight)))
+    blended: List[PlayerImpact] = []
+    for athlete_id in prior_by_id.keys() | current_by_id.keys():
+        prior = prior_by_id.get(athlete_id)
+        current = current_by_id.get(athlete_id)
+        base = current or prior
+        if base is None:
+            continue
+
+        prior_share = float(prior.impact_share) if prior is not None else 0.0
+        current_share = float(current.impact_share) if current is not None else 0.0
+
+        def _blend_value(field: str) -> float:
+            prior_value = float(getattr(prior, field)) if prior is not None else 0.0
+            current_value = float(getattr(current, field)) if current is not None else 0.0
+            return (1.0 - alpha) * prior_value + alpha * current_value
+
+        blended.append(
+            PlayerImpact(
+                athlete_id=athlete_id,
+                name=str(base.name),
+                points_per_game=_blend_value("points_per_game"),
+                assists_per_game=_blend_value("assists_per_game"),
+                rebounds_per_game=_blend_value("rebounds_per_game"),
+                steals_per_game=_blend_value("steals_per_game"),
+                blocks_per_game=_blend_value("blocks_per_game"),
+                raw_impact=_blend_value("raw_impact"),
+                impact_share=(1.0 - alpha) * prior_share + alpha * current_share,
+                relative_raw_impact=_blend_value("relative_raw_impact"),
+                injury_status=str(base.injury_status),
+                injury_weight=float(base.injury_weight),
+            )
+        )
+
+    blended.sort(key=lambda player: player.raw_impact, reverse=True)
+    return blended
+
+
 def compute_team_player_impacts(
     team_name: str,
     *,

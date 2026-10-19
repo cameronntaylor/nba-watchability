@@ -11,13 +11,19 @@ import pandas as pd
 from dateutil import parser as dtparser
 from dateutil import tz
 
-from core.health_espn import PlayerImpact, compute_team_player_impacts, injury_weight
+from core.health_espn import (
+    PlayerImpact,
+    blend_player_impact_shares,
+    compute_team_player_impacts,
+    injury_weight,
+)
 from core.http_cache import get_json_cached
 from core.importance import compute_importance_detail_map
 from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
 from core.season_strategy import (
     PRESEASON_TEAM_QUALITY,
+    current_season_weight,
     is_preseason_date,
     nba_season_year,
     smoothed_win_pct_input,
@@ -604,6 +610,7 @@ def build_watchability_df(
     tz_name: str = "America/Los_Angeles",
     include_post: bool = False,
     precomputed_team_impacts: dict[str, list[PlayerImpact]] | None = None,
+    precomputed_prior_team_impacts: dict[str, list[PlayerImpact]] | None = None,
 ) -> pd.DataFrame:
     """
     Build the per-game DataFrame used by the dashboard and downstream scripts.
@@ -629,6 +636,11 @@ def build_watchability_df(
     team_impacts: dict[str, list[PlayerImpact]] = {
         _normalize_team_name(team_name): list(players)
         for team_name, players in (precomputed_team_impacts or {}).items()
+        if _normalize_team_name(team_name) in team_name_by_key
+    }
+    prior_team_impacts: dict[str, list[PlayerImpact]] = {
+        _normalize_team_name(team_name): list(players)
+        for team_name, players in (precomputed_prior_team_impacts or {}).items()
         if _normalize_team_name(team_name) in team_name_by_key
     }
 
@@ -918,9 +930,13 @@ def build_watchability_df(
     # team_key -> (athlete_id, name, star_raw, star_sum)
     top_scorer: dict[str, tuple[str, str, float, float]] = {}
 
-    def _fetch_team(team_key: str, team_name: str) -> tuple[str, list[PlayerImpact]]:
+    def _fetch_team(
+        team_key: str,
+        team_name: str,
+        season_year: int,
+    ) -> tuple[str, list[PlayerImpact]]:
         try:
-            return team_key, compute_team_player_impacts(team_name)
+            return team_key, compute_team_player_impacts(team_name, season_year=season_year)
         except Exception:
             return team_key, []
 
@@ -929,13 +945,46 @@ def build_watchability_df(
         if missing_team_keys:
             with cf.ThreadPoolExecutor(max_workers=star_workers) as ex:
                 futures = [
-                    ex.submit(_fetch_team, team_key, team_name_by_key.get(team_key, team_key))
+                    ex.submit(
+                        _fetch_team,
+                        team_key,
+                        team_name_by_key.get(team_key, team_key),
+                        current_season_year,
+                    )
                     for team_key in missing_team_keys
                 ]
                 for fut in cf.as_completed(futures):
                     k, players = fut.result()
                     # Keep the full list for robust injury matching and logging.
                     team_impacts[k] = players
+
+        # Injury importance starts from prior-season player shares and transitions
+        # to current-season shares on the same 0-to-10-game ramp as Team Quality.
+        early_season_injury_teams = {
+            team_key
+            for team_key in teams_with_injuries
+            if team_key in team_name_by_key
+            and current_season_weight(
+                get_record(team_name_by_key[team_key], record_map)
+            ) < 1.0
+        }
+        missing_prior_team_keys = sorted(
+            early_season_injury_teams - set(prior_team_impacts)
+        )
+        if missing_prior_team_keys:
+            with cf.ThreadPoolExecutor(max_workers=star_workers) as ex:
+                futures = [
+                    ex.submit(
+                        _fetch_team,
+                        team_key,
+                        team_name_by_key.get(team_key, team_key),
+                        prior_season_year,
+                    )
+                    for team_key in missing_prior_team_keys
+                ]
+                for fut in cf.as_completed(futures):
+                    k, players = fut.result()
+                    prior_team_impacts[k] = players
 
         def _star_sum(pl: PlayerImpact) -> float:
             return (
@@ -1033,7 +1082,14 @@ def build_watchability_df(
         return merged
 
     def _team_key_injuries_and_health(team_key: str, game_id: str | None, *, target_dow: str | None) -> tuple[float, str, str]:
-        players = team_impacts.get(team_key, []) or []
+        current_players = team_impacts.get(team_key, []) or []
+        prior_players = prior_team_impacts.get(team_key, []) or []
+        team_name = team_name_by_key.get(team_key, team_key)
+        players = blend_player_impact_shares(
+            prior_players,
+            current_players,
+            current_weight=current_season_weight(get_record(team_name, record_map)),
+        )
         by_team = _merged_team_status_map(team_key, game_id, players=players)
         payload = (league_injuries_by_team or {}).get(team_key, {}) or {}
         detail_by_id = payload.get("detail_by_id") if isinstance(payload, dict) else {}
