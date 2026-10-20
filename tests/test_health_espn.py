@@ -1,6 +1,6 @@
 import unittest
 
-from core.health_espn import PlayerImpact, blend_player_impact_shares
+from core.health_espn import PlayerImpact, blend_player_impact_shares, top_star_impact
 from core.season_strategy import current_season_weight
 
 
@@ -89,6 +89,37 @@ class PlayerImpactBlendTests(unittest.TestCase):
             current_weight=current_season_weight((3, 2)),
         )
         self.assertEqual(_shares(players), {"chet": 0.40, "shai": 0.60})
+
+    def test_star_selection_uses_same_early_season_blend(self):
+        prior = [
+            _player("veteran", "Prior Star", 0.60, 40.0),
+            _player("rising", "Rising Star", 0.40, 20.0),
+        ]
+        current = [
+            _player("veteran", "Prior Star", 0.40, 20.0),
+            _player("rising", "Rising Star", 0.60, 40.0),
+        ]
+
+        at_zero = top_star_impact(
+            prior,
+            current,
+            current_weight=current_season_weight((0, 0)),
+            rebound_weight=0.7,
+            assist_weight=0.7,
+            denominator=50.0,
+        )
+        at_ten = top_star_impact(
+            prior,
+            current,
+            current_weight=current_season_weight((7, 3)),
+            rebound_weight=0.7,
+            assist_weight=0.7,
+            denominator=50.0,
+        )
+
+        self.assertEqual(at_zero.name, "Prior Star")
+        self.assertEqual(at_ten.name, "Rising Star")
+        self.assertAlmostEqual(at_zero.raw_factor, (40.0 / 50.0) ** 3)
 
 
 if __name__ == "__main__":
