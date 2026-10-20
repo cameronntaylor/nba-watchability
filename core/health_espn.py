@@ -205,6 +205,14 @@ class PlayerImpact:
     injury_weight: float
 
 
+@dataclass(frozen=True)
+class StarImpact:
+    athlete_id: str
+    name: str
+    raw_factor: float
+    weighted_stat_sum: float
+
+
 def blend_player_impact_shares(
     prior_players: Iterable[PlayerImpact],
     current_players: Iterable[PlayerImpact],
@@ -262,6 +270,45 @@ def blend_player_impact_shares(
 
     blended.sort(key=lambda player: player.raw_impact, reverse=True)
     return blended
+
+
+def top_star_impact(
+    prior_players: Iterable[PlayerImpact],
+    current_players: Iterable[PlayerImpact],
+    *,
+    current_weight: float,
+    rebound_weight: float,
+    assist_weight: float,
+    denominator: float,
+) -> Optional[StarImpact]:
+    """Select a team's star from prior/current stats on the early-season ramp."""
+    players = blend_player_impact_shares(
+        prior_players,
+        current_players,
+        current_weight=current_weight,
+    )
+    if not players:
+        return None
+
+    def _weighted_sum(player: PlayerImpact) -> float:
+        return (
+            float(player.points_per_game)
+            + float(rebound_weight) * float(player.rebounds_per_game)
+            + float(assist_weight) * float(player.assists_per_game)
+            + float(player.steals_per_game)
+            + float(player.blocks_per_game)
+        )
+
+    best = max(players, key=_weighted_sum)
+    weighted_sum = _weighted_sum(best)
+    scale = float(denominator) if float(denominator) else 1.0
+    raw_factor = (float(weighted_sum) / scale) ** 3
+    return StarImpact(
+        athlete_id=str(best.athlete_id),
+        name=str(best.name),
+        raw_factor=float(raw_factor),
+        weighted_stat_sum=float(weighted_sum),
+    )
 
 
 def compute_team_player_impacts(

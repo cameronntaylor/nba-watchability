@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import concurrent.futures as cf
 import os
 from typing import Any
 
@@ -11,11 +12,13 @@ from dateutil import tz
 from core.forecast_config import load_forecast_config
 from core.forecast_features import build_team_recent_feature_map
 from core.forecast_spread import predict_home_spread
+from core.health_espn import PlayerImpact, compute_team_player_impacts, top_star_impact
 from core.http_cache import get_json_cached
 from core.odds_api import fetch_nba_spreads_window
 from core.schedule_espn import fetch_games_for_date
 from core.season_strategy import (
     PRESEASON_TEAM_QUALITY,
+    current_season_weight,
     is_preseason_date,
     nba_season_year,
     smoothed_win_pct_input,
@@ -23,10 +26,17 @@ from core.season_strategy import (
 from core.standings import _normalize_team_name, get_record, get_win_pct
 from core.standings_espn import fetch_team_standings_detail_maps, last_standings_fetch_meta
 from core.team_meta import get_logo_url, get_team_abbr
+from core.watchability_v2_params import (
+    STAR_AST_WEIGHT,
+    STAR_DENOM,
+    STAR_REB_WEIGHT,
+    STAR_WINPCT_BUMP,
+)
 from core.build_watchability_df import (
     _map_watch_provider_label,
     _load_espn_game_summary_maps,
     _load_nba_schedule_game_id_map_by_pt_date,
+    watch_destination_url,
 )
 import core.watchability as watch
 
@@ -64,6 +74,90 @@ def _team_feature(team_features: dict[str, dict], team_key: str, default_health:
         "avg_team_spread_7d": float(base.get("avg_team_spread_7d", 0.0)),
         "n_games": int(base.get("n_games", 0) or 0),
     }
+
+
+def _load_forecast_star_map(
+    *,
+    team_names: set[str],
+    record_map: dict,
+    current_season_year: int,
+    prior_season_year: int,
+    precomputed_team_impacts: dict[str, list[PlayerImpact]] | None = None,
+    precomputed_prior_team_impacts: dict[str, list[PlayerImpact]] | None = None,
+) -> dict[str, tuple[str, str, float, float]]:
+    """Load star profiles with the same prior/current ramp used by injuries."""
+    team_name_by_key = {_normalize_team_name(name): name for name in team_names}
+    current_impacts = {
+        _normalize_team_name(name): list(players)
+        for name, players in (precomputed_team_impacts or {}).items()
+        if _normalize_team_name(name) in team_name_by_key
+    }
+    prior_impacts = {
+        _normalize_team_name(name): list(players)
+        for name, players in (precomputed_prior_team_impacts or {}).items()
+        if _normalize_team_name(name) in team_name_by_key
+    }
+
+    def _fetch(team_key: str, season_year: int) -> tuple[str, list[PlayerImpact]]:
+        try:
+            players = compute_team_player_impacts(
+                team_name_by_key[team_key],
+                season_year=season_year,
+            )
+        except Exception:
+            players = []
+        return team_key, players
+
+    current_missing = sorted(set(team_name_by_key) - set(current_impacts))
+    prior_needed = {
+        team_key
+        for team_key, team_name in team_name_by_key.items()
+        if current_season_weight(get_record(team_name, record_map)) < 1.0
+    }
+    prior_missing = sorted(prior_needed - set(prior_impacts))
+    fetches = [
+        (team_key, current_season_year, current_impacts)
+        for team_key in current_missing
+    ] + [
+        (team_key, prior_season_year, prior_impacts)
+        for team_key in prior_missing
+    ]
+    if fetches:
+        max_workers = max(1, min(int(os.getenv("NBA_WATCH_STAR_WORKERS", "8")), len(fetches)))
+        with cf.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_fetch, team_key, season_year): destination
+                for team_key, season_year, destination in fetches
+            }
+            for future in cf.as_completed(futures):
+                team_key, players = future.result()
+                futures[future][team_key] = players
+
+    stars: dict[str, tuple[str, str, float, float]] = {}
+    for team_key, team_name in team_name_by_key.items():
+        profile = top_star_impact(
+            prior_impacts.get(team_key, []) or [],
+            current_impacts.get(team_key, []) or [],
+            current_weight=current_season_weight(get_record(team_name, record_map)),
+            rebound_weight=STAR_REB_WEIGHT,
+            assist_weight=STAR_AST_WEIGHT,
+            denominator=STAR_DENOM,
+        )
+        if profile is None:
+            continue
+        stars[team_key] = (
+            profile.athlete_id,
+            profile.name,
+            profile.raw_factor,
+            profile.weighted_stat_sum,
+        )
+    return stars
+
+
+def _star_factor_display(star: tuple[str, str, float, float] | None, bump_points: float) -> str:
+    if star is None or float(bump_points) <= 0.0:
+        return ""
+    return f"{star[1]} +{int(round(float(bump_points)))} TQ"
 
 
 def _load_nba_provider_map_by_game_id() -> dict[str, str]:
@@ -136,6 +230,8 @@ def build_watchability_forecast_df(
     tz_name: str = "America/Los_Angeles",
     include_post: bool = False,
     cfg_path: str | None = None,
+    precomputed_team_impacts: dict[str, list[PlayerImpact]] | None = None,
+    precomputed_prior_team_impacts: dict[str, list[PlayerImpact]] | None = None,
 ) -> pd.DataFrame:
     cfg = load_forecast_config(cfg_path)
     days = int(days_ahead if days_ahead is not None else cfg.days_ahead)
@@ -167,7 +263,7 @@ def build_watchability_forecast_df(
 
     odds_map = _build_odds_map(days_ahead=days, local_tz=local_tz)
 
-    rows: list[dict[str, Any]] = []
+    scheduled_games: list[tuple[dt.date, list[dict[str, Any]]]] = []
     start_date = now_pt.date()
     for i in range(days):
         d = start_date + dt.timedelta(days=i)
@@ -175,7 +271,26 @@ def build_watchability_forecast_df(
             games = fetch_games_for_date(d)
         except Exception:
             continue
+        scheduled_games.append((d, games))
 
+    regular_season_team_names = {
+        str(g.get(side) or "").strip()
+        for d, games in scheduled_games
+        for g in games
+        for side in ("home_team", "away_team")
+        if str(g.get(side) or "").strip() and not is_preseason_date(d)
+    }
+    star_map = _load_forecast_star_map(
+        team_names=regular_season_team_names,
+        record_map=record_map,
+        current_season_year=current_season_year,
+        prior_season_year=prior_season_year,
+        precomputed_team_impacts=precomputed_team_impacts,
+        precomputed_prior_team_impacts=precomputed_prior_team_impacts,
+    )
+
+    rows: list[dict[str, Any]] = []
+    for d, games in scheduled_games:
         for g in games:
             state = str(g.get("state") or "pre")
             if not include_post and state == "post":
@@ -220,14 +335,88 @@ def build_watchability_forecast_df(
             odds_key = (local_date.isoformat(), home_key, away_key)
             odds = odds_map.get(odds_key)
 
+            home_star = star_map.get(home_key)
+            away_star = star_map.get(away_key)
+            home_star_factor = (
+                float(STAR_WINPCT_BUMP) * float(home_star[2])
+                if home_star is not None and not preseason
+                else float(hk["avg_star_factor_7d"])
+            )
+            away_star_factor = (
+                float(STAR_WINPCT_BUMP) * float(away_star[2])
+                if away_star is not None and not preseason
+                else float(ak["avg_star_factor_7d"])
+            )
+
+            # Forecasted adjusted win%.
+            adj_home = max(0.0, min(1.0, home_wp * float(hk["avg_health_7d"]) + home_star_factor))
+            adj_away = max(0.0, min(1.0, away_wp * float(ak["avg_health_7d"]) + away_star_factor))
+
+            tq_home, home_alpha = smoothed_win_pct_input(
+                team_name=home,
+                current_adjusted_win_pct=adj_home,
+                current_record=(w_home_rec, l_home_rec),
+                prior_win_pct=get_win_pct(home, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=max(home_star_factor, default_star_factor),
+            )
+            tq_away, away_alpha = smoothed_win_pct_input(
+                team_name=away,
+                current_adjusted_win_pct=adj_away,
+                current_record=(w_away_rec, l_away_rec),
+                prior_win_pct=get_win_pct(away, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=max(away_star_factor, default_star_factor),
+            )
+            tq_home_pre, _ = smoothed_win_pct_input(
+                team_name=home,
+                current_adjusted_win_pct=home_wp * float(hk["avg_health_7d"]),
+                current_record=(w_home_rec, l_home_rec),
+                prior_win_pct=get_win_pct(home, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=0.0,
+            )
+            tq_away_pre, _ = smoothed_win_pct_input(
+                team_name=away,
+                current_adjusted_win_pct=away_wp * float(ak["avg_health_7d"]),
+                current_record=(w_away_rec, l_away_rec),
+                prior_win_pct=get_win_pct(away, prior_winpct_map, default=0.5),
+                prior_season_year=prior_season_year,
+                prior_fully_healthy_star_factor=0.0,
+            )
+
+            team_quality_pre_star = (
+                PRESEASON_TEAM_QUALITY
+                if preseason
+                else watch.team_quality(tq_home_pre, tq_away_pre)
+            )
+            away_star_bump = (
+                0.0
+                if preseason
+                else 100.0
+                * (
+                    watch.team_quality(tq_home_pre, tq_away)
+                    - watch.team_quality(tq_home_pre, tq_away_pre)
+                )
+            )
+            home_star_bump = (
+                0.0
+                if preseason
+                else 100.0
+                * (
+                    watch.team_quality(tq_home, tq_away_pre)
+                    - watch.team_quality(tq_home_pre, tq_away_pre)
+                )
+            )
+
             if odds is not None and odds.home_spread is not None:
                 home_spread = float(odds.home_spread)
                 spread_source = str(odds.spread_source or "odds")
                 spread_mode = "odds"
             else:
                 home_spread = predict_home_spread(
-                    home_wp=home_wp,
-                    away_wp=away_wp,
+                    home_wp=tq_home,
+                    away_wp=tq_away,
                     home_avg_spread_7d=float(hk["avg_team_spread_7d"]),
                     away_avg_spread_7d=float(ak["avg_team_spread_7d"]),
                     a1=float(cfg.a1),
@@ -236,43 +425,6 @@ def build_watchability_forecast_df(
                 )
                 spread_source = "forecast_model"
                 spread_mode = "forecast"
-
-            # Forecasted adjusted win%.
-            adj_home = max(0.0, min(1.0, home_wp * float(hk["avg_health_7d"]) + float(hk["avg_star_factor_7d"])))
-            adj_away = max(0.0, min(1.0, away_wp * float(ak["avg_health_7d"]) + float(ak["avg_star_factor_7d"])))
-
-            tq_home, home_alpha = smoothed_win_pct_input(
-                team_name=home,
-                current_adjusted_win_pct=adj_home,
-                current_record=(w_home_rec, l_home_rec),
-                prior_win_pct=get_win_pct(home, prior_winpct_map, default=0.5),
-                prior_season_year=prior_season_year,
-                prior_fully_healthy_star_factor=max(float(hk["avg_star_factor_7d"]), default_star_factor),
-            )
-            tq_away, away_alpha = smoothed_win_pct_input(
-                team_name=away,
-                current_adjusted_win_pct=adj_away,
-                current_record=(w_away_rec, l_away_rec),
-                prior_win_pct=get_win_pct(away, prior_winpct_map, default=0.5),
-                prior_season_year=prior_season_year,
-                prior_fully_healthy_star_factor=max(float(ak["avg_star_factor_7d"]), default_star_factor),
-            )
-            tq_home_pre, _ = smoothed_win_pct_input(
-                team_name=home,
-                current_adjusted_win_pct=home_wp * float(hk["avg_health_7d"]),
-                current_record=(w_home_rec, l_home_rec),
-                prior_win_pct=get_win_pct(home, prior_winpct_map, default=0.5),
-                prior_season_year=prior_season_year,
-                prior_fully_healthy_star_factor=max(float(hk["avg_star_factor_7d"]), default_star_factor),
-            )
-            tq_away_pre, _ = smoothed_win_pct_input(
-                team_name=away,
-                current_adjusted_win_pct=away_wp * float(ak["avg_health_7d"]),
-                current_record=(w_away_rec, l_away_rec),
-                prior_win_pct=get_win_pct(away, prior_winpct_map, default=0.5),
-                prior_season_year=prior_season_year,
-                prior_fully_healthy_star_factor=max(float(ak["avg_star_factor_7d"]), default_star_factor),
-            )
 
             if preseason:
                 quality = PRESEASON_TEAM_QUALITY
@@ -341,23 +493,17 @@ def build_watchability_forecast_df(
                     "Current season weight (home)": home_alpha,
                     "Health (away)": float(ak["avg_health_7d"]),
                     "Health (home)": float(hk["avg_health_7d"]),
-                    "Star factor (away)": float(ak["avg_star_factor_7d"]),
-                    "Star factor (home)": float(hk["avg_star_factor_7d"]),
-                    "Away Star Player": "",
-                    "Home Star Player": "",
-                    "Away Star Raw": 0.0,
-                    "Home Star Raw": 0.0,
-                    "Team quality pre-star": (
-                        PRESEASON_TEAM_QUALITY if preseason else watch.team_quality(tq_home_pre, tq_away_pre)
-                    ),
-                    "Team Quality bump (away)": (
-                        0.0 if preseason else float(ak["avg_star_factor_7d"]) * away_alpha * 100.0
-                    ),
-                    "Team Quality bump (home)": (
-                        0.0 if preseason else float(hk["avg_star_factor_7d"]) * home_alpha * 100.0
-                    ),
-                    "Away Star Factor": "",
-                    "Home Star Factor": "",
+                    "Star factor (away)": float(away_star_factor),
+                    "Star factor (home)": float(home_star_factor),
+                    "Away Star Player": "" if preseason or away_star is None else str(away_star[1]),
+                    "Home Star Player": "" if preseason or home_star is None else str(home_star[1]),
+                    "Away Star Raw": 0.0 if preseason or away_star is None else float(away_star[2]),
+                    "Home Star Raw": 0.0 if preseason or home_star is None else float(home_star[2]),
+                    "Team quality pre-star": team_quality_pre_star,
+                    "Team Quality bump (away)": away_star_bump,
+                    "Team Quality bump (home)": home_star_bump,
+                    "Away Star Factor": _star_factor_display(away_star, away_star_bump),
+                    "Home Star Factor": _star_factor_display(home_star, home_star_bump),
                     "Away Key Injuries": "",
                     "Home Key Injuries": "",
                     "Away injuries detail JSON": "[]",
@@ -439,8 +585,15 @@ def build_watchability_forecast_df(
             return "League Pass"
         return nba_provider_by_gid.get(str(gid_nba), "League Pass")
 
-    df["Where to watch URL"] = df.apply(_nba_game_url_row, axis=1)
     df["Where to watch provider"] = df.apply(_provider_row, axis=1)
+    df["Where to watch URL"] = df.apply(
+        lambda r: watch_destination_url(
+            provider=str(r.get("Where to watch provider") or "League Pass"),
+            direct_game_url=_nba_game_url_row(r),
+            espn_game_id=str(r.get("ESPN game id") or ""),
+        ),
+        axis=1,
+    )
 
     df = df.sort_values(["Local date", "Tip dt (PT)", "aWI"], ascending=[True, True, False]).reset_index(drop=True)
     return df

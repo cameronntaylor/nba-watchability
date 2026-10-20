@@ -16,6 +16,7 @@ from core.health_espn import (
     blend_player_impact_shares,
     compute_team_player_impacts,
     injury_weight,
+    top_star_impact,
 )
 from core.http_cache import get_json_cached
 from core.importance import compute_importance_detail_map
@@ -485,7 +486,7 @@ def _map_watch_provider_label(names: list[str]) -> str:
     combined = " ".join([str(x) for x in names if str(x).strip()]).lower()
     if not combined:
         return "League Pass"
-    if "peacock" in combined:
+    if "peacock" in combined or "nbc" in combined:
         return "Peacock"
     if "prime" in combined or "amazon" in combined:
         return "Prime"
@@ -493,6 +494,35 @@ def _map_watch_provider_label(names: list[str]) -> str:
     if "espn" in combined or combined.strip() == "abc" or " abc" in combined:
         return "ESPN"
     return "League Pass"
+
+
+WATCH_DESTINATION_BY_PROVIDER = {
+    "League Pass": "https://www.nba.com/watch/league-pass-stream",
+    "Peacock": "https://www.peacocktv.com/sports/nba",
+    "Prime": "https://www.amazon.com/gp/video/sports",
+    "ESPN": "https://www.espn.com/watch/",
+}
+
+
+def watch_destination_url(
+    *,
+    provider: str,
+    direct_game_url: str = "",
+    espn_game_id: str = "",
+) -> str:
+    """Return a usable watch destination even when NBA game-id matching misses."""
+    direct = str(direct_game_url or "").strip()
+    if direct:
+        return direct
+
+    provider_label = str(provider or "").strip() or "League Pass"
+    game_id = str(espn_game_id or "").strip()
+    if provider_label == "ESPN" and game_id.isdigit():
+        return f"https://www.espn.com/watch/player/_/eventCalendarId/{game_id}"
+    return WATCH_DESTINATION_BY_PROVIDER.get(
+        provider_label,
+        WATCH_DESTINATION_BY_PROVIDER["League Pass"],
+    )
 
 
 def _extract_espn_broadcast_media_names(summary: dict[str, Any]) -> list[str]:
@@ -906,22 +936,17 @@ def build_watchability_df(
         # nba.com uses format: https://www.nba.com/game/bos-vs-dal-0022500721
         return f"https://www.nba.com/game/{away_abbr}-vs-{home_abbr}-{gid}"
 
-    df["Where to watch URL"] = df.apply(_nba_game_url_row, axis=1)
     df["Where to watch provider"] = df["ESPN game id"].apply(
         lambda gid: watch_providers.get(str(gid), "League Pass") if gid is not None else "League Pass"
     )
-
-    teams_with_injuries: set[str] = set()
-    for _, by_team in injury_reports.items():
-        for team_key, inj in (by_team or {}).items():
-            if isinstance(inj, dict) and inj:
-                teams_with_injuries.add(str(team_key))
-    for team_key, payload in (league_injuries_by_team or {}).items():
-        if not isinstance(payload, dict):
-            continue
-        by_id = payload.get("by_id")
-        if isinstance(by_id, dict) and by_id:
-            teams_with_injuries.add(str(team_key))
+    df["Where to watch URL"] = df.apply(
+        lambda r: watch_destination_url(
+            provider=str(r.get("Where to watch provider") or "League Pass"),
+            direct_game_url=_nba_game_url_row(r),
+            espn_game_id=str(r.get("ESPN game id") or ""),
+        ),
+        axis=1,
+    )
 
     # Star/top-scorer map needed for all teams; compute impacts once per team (cached per-athlete stats).
     # Keep this parallelized and rely on the disk HTTP cache to make warm loads fast.
@@ -958,18 +983,18 @@ def build_watchability_df(
                     # Keep the full list for robust injury matching and logging.
                     team_impacts[k] = players
 
-        # Injury importance starts from prior-season player shares and transitions
-        # to current-season shares on the same 0-to-10-game ramp as Team Quality.
-        early_season_injury_teams = {
+        # Injury importance and star tags start from prior-season player data and
+        # transition to current-season data on the same 0-to-10-game ramp as
+        # Team Quality. Star tags need the prior data even for healthy teams.
+        early_season_teams = {
             team_key
-            for team_key in teams_with_injuries
-            if team_key in team_name_by_key
-            and current_season_weight(
+            for team_key in team_name_by_key
+            if current_season_weight(
                 get_record(team_name_by_key[team_key], record_map)
             ) < 1.0
         }
         missing_prior_team_keys = sorted(
-            early_season_injury_teams - set(prior_team_impacts)
+            early_season_teams - set(prior_team_impacts)
         )
         if missing_prior_team_keys:
             with cf.ThreadPoolExecutor(max_workers=star_workers) as ex:
@@ -986,24 +1011,25 @@ def build_watchability_df(
                     k, players = fut.result()
                     prior_team_impacts[k] = players
 
-        def _star_sum(pl: PlayerImpact) -> float:
-            return (
-                float(pl.points_per_game)
-                + float(STAR_REB_WEIGHT) * float(pl.rebounds_per_game)
-                + float(STAR_AST_WEIGHT) * float(pl.assists_per_game)
-                + float(pl.steals_per_game)
-                + float(pl.blocks_per_game)
+        for team_key in team_name_by_key:
+            profile = top_star_impact(
+                prior_team_impacts.get(team_key, []) or [],
+                team_impacts.get(team_key, []) or [],
+                current_weight=current_season_weight(
+                    get_record(team_name_by_key[team_key], record_map)
+                ),
+                rebound_weight=STAR_REB_WEIGHT,
+                assist_weight=STAR_AST_WEIGHT,
+                denominator=STAR_DENOM,
             )
-
-        for team_key, players in team_impacts.items():
-            if not players:
+            if profile is None:
                 continue
-            best = max(players, key=_star_sum)
-            ssum = _star_sum(best)
-            denom = float(STAR_DENOM) if float(STAR_DENOM) else 1.0
-            sraw = float(ssum) / denom
-            sraw = sraw * sraw * sraw
-            top_scorer[team_key] = (best.athlete_id, best.name, sraw, ssum)
+            top_scorer[team_key] = (
+                profile.athlete_id,
+                profile.name,
+                profile.raw_factor,
+                profile.weighted_stat_sum,
+            )
 
     def _status_priority(status: str) -> int:
         s = (status or "").strip().lower()
@@ -1331,7 +1357,7 @@ def build_watchability_df(
             current_record=current_record,
             prior_win_pct=prior_win_pct,
             prior_season_year=prior_season_year,
-            prior_fully_healthy_star_factor=prior_healthy_star_factor,
+            prior_fully_healthy_star_factor=(0.0 if pre_star else prior_healthy_star_factor),
         )
 
     df["Team quality input win% (away)"] = df.apply(lambda r: _smoothed_input(r, "away")[0], axis=1)
@@ -1358,13 +1384,10 @@ def build_watchability_df(
 
         away_pre = float(r.get("Team quality input win% (away) pre-star") or 0.0)
         home_pre = float(r.get("Team quality input win% (home) pre-star") or 0.0)
-        away_sf = float(r.get("Star factor (away)") or 0.0)
-        home_sf = float(r.get("Star factor (home)") or 0.0)
-
         q_pre = float(watch.team_quality(home_pre, away_pre))
 
-        away_only = min(1.0, away_pre + float(r["Current season weight (away)"]) * away_sf)
-        home_only = min(1.0, home_pre + float(r["Current season weight (home)"]) * home_sf)
+        away_only = float(r.get("Team quality input win% (away)") or away_pre)
+        home_only = float(r.get("Team quality input win% (home)") or home_pre)
         dq_away = float(watch.team_quality(home_pre, away_only)) - q_pre
         dq_home = float(watch.team_quality(home_only, away_pre)) - q_pre
         return pd.Series(
