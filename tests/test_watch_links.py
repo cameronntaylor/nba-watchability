@@ -36,8 +36,13 @@ class WatchLinkTests(unittest.TestCase):
             "https://www.espn.com/watch/player/_/eventCalendarId/401000001",
         )
 
-    def test_nbc_broadcasts_map_to_peacock(self):
-        self.assertEqual(_map_watch_provider_label(["NBC"]), "Peacock")
+    def test_nbc_broadcasts_keep_network_and_streaming_labels(self):
+        self.assertEqual(_map_watch_provider_label(["NBC"]), "NBC / Peacock")
+        self.assertEqual(_map_watch_provider_label(["Peacock"]), "NBC / Peacock")
+        self.assertEqual(
+            watch_destination_url(provider="NBC / Peacock"),
+            "https://www.peacocktv.com/sports/nba",
+        )
 
 
 if __name__ == "__main__":

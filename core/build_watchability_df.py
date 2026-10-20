@@ -479,7 +479,7 @@ def _map_watch_provider_label(names: list[str]) -> str:
 
     User-facing categories:
       - ESPN
-      - Peacock
+      - NBC / Peacock
       - Prime
       - League Pass (fallback for everything else / unknown)
     """
@@ -487,7 +487,7 @@ def _map_watch_provider_label(names: list[str]) -> str:
     if not combined:
         return "League Pass"
     if "peacock" in combined or "nbc" in combined:
-        return "Peacock"
+        return "NBC / Peacock"
     if "prime" in combined or "amazon" in combined:
         return "Prime"
     # ESPN family (including ABC/ESPN2/ESPN+ labels) collapses into "ESPN".
@@ -498,6 +498,7 @@ def _map_watch_provider_label(names: list[str]) -> str:
 
 WATCH_DESTINATION_BY_PROVIDER = {
     "League Pass": "https://www.nba.com/watch/league-pass-stream",
+    "NBC / Peacock": "https://www.peacocktv.com/sports/nba",
     "Peacock": "https://www.peacocktv.com/sports/nba",
     "Prime": "https://www.amazon.com/gp/video/sports",
     "ESPN": "https://www.espn.com/watch/",
