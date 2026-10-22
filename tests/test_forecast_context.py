@@ -66,6 +66,11 @@ class ForecastContextTests(unittest.TestCase):
         with (
             patch.object(forecast.dt, "datetime", _FixedDateTime),
             patch.object(
+                forecast.pd.DataFrame,
+                "apply",
+                side_effect=AssertionError("forecast lookup must not materialize full rows"),
+            ),
+            patch.object(
                 forecast,
                 "fetch_team_standings_detail_maps",
                 side_effect=[current_standings, prior_standings],

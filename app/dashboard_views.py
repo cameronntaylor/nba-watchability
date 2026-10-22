@@ -1045,6 +1045,25 @@ def _pick_slate_df(df: pd.DataFrame, slate_day: str | None) -> pd.DataFrame:
     return df.copy()
 
 
+def _set_top_star_flags(df: pd.DataFrame, top_star_set: set[str]) -> None:
+    """Set recommendation flags without materializing mixed-timezone rows."""
+    today_mask = df.get("_is_today_pt", pd.Series(False, index=df.index)).fillna(False).astype(bool)
+    away_keys = (
+        df.get("Away team", pd.Series("", index=df.index, dtype=object))
+        .fillna("")
+        .astype(str)
+        .map(_normalize_team_name)
+    )
+    home_keys = (
+        df.get("Home team", pd.Series("", index=df.index, dtype=object))
+        .fillna("")
+        .astype(str)
+        .map(_normalize_team_name)
+    )
+    df["_away_top_star"] = today_mask & away_keys.isin(top_star_set)
+    df["_home_top_star"] = today_mask & home_keys.isin(top_star_set)
+
+
 def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wrapper_class: str = "") -> None:
     """
     Recommendations:
@@ -1083,13 +1102,14 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
     d["_is_live"] = d.get("Is live", False)
     d["_status"] = d.get("Status", "pre").astype(str) if "Status" in d.columns else "pre"
 
-    def _minutes_to_tip_row(r) -> float | None:
-        dt_pt = _to_valid_datetime(r.get("Tip dt (PT)"))
+    def _minutes_to_tip(value) -> float | None:
+        dt_pt = _to_valid_datetime(value)
         if dt_pt is not None:
             return (dt_pt - now_pt).total_seconds() / 60.0
         return None
 
-    d["_minutes_to_tip"] = d.apply(_minutes_to_tip_row, axis=1)
+    tip_values = d.get("Tip dt (PT)", pd.Series(None, index=d.index, dtype=object))
+    d["_minutes_to_tip"] = tip_values.map(_minutes_to_tip)
 
     today_pt = now_pt.date()
 
@@ -1134,16 +1154,7 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         d["_is_today_pt"] = False
         eligible = d.iloc[0:0].copy()
     top_star_set = _top_star_set(eligible)
-    d["_away_top_star"] = d.apply(
-        lambda r: bool(r.get("_is_today_pt", False))
-        and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
-        axis=1,
-    )
-    d["_home_top_star"] = d.apply(
-        lambda r: bool(r.get("_is_today_pt", False))
-        and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
-        axis=1,
-    )
+    _set_top_star_flags(d, top_star_set)
 
     def _w2wn_score_row(r) -> float:
         wi = float(r.get("aWI") or 0.0)
@@ -1161,7 +1172,17 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             return wi - (m / 2.0)
         return wi
 
-    d["_w2wn_score"] = d.apply(_w2wn_score_row, axis=1)
+    score_columns = [
+        "aWI",
+        "_is_live",
+        "_status",
+        "Away score",
+        "Home score",
+        "Time remaining",
+        "_minutes_to_tip",
+    ]
+    score_rows = d.reindex(columns=score_columns).to_dict(orient="records")
+    d["_w2wn_score"] = [_w2wn_score_row(row) for row in score_rows]
 
     def _spread_str(r) -> tuple[str, str]:
         return _spread_display_parts(r)
@@ -1539,16 +1560,19 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             cards.append(_rec_card_multi(title="What to watch now", title_class="now", subtitle="Watch LIVE:", rows=rows))
 
     # 2) Best upcoming game tonight
+    # Tip time is the authoritative signal for an upcoming game. Providers can
+    # transiently omit status or return values such as "scheduled" instead of
+    # ESPN's usual "pre"; requiring that exact string made tonight's two games
+    # disappear from recommendations even though both tips were still ahead.
+    not_live = ~_coerce_bool_series(d.get("_is_live", False), default=False)
+    not_finished = ~d["_status"].astype(str).str.strip().str.lower().isin({"post", "final"})
     if is_future_slate:
-        upcoming = d[
-            (d["_status"].astype(str).str.lower() == "pre")
-            & (d.get("_is_live", False) == False)  # noqa: E712
-        ].copy()
+        upcoming = d[not_live & not_finished].copy()
     else:
         upcoming = d[
-            (d["_status"].astype(str).str.lower() == "pre")
-            & (d.get("_is_live", False) == False)  # noqa: E712
-            & (d["_minutes_to_tip"].notna())
+            not_live
+            & not_finished
+            & d["_minutes_to_tip"].notna()
             & (d["_minutes_to_tip"].astype(float) > 0)
         ].copy()
     if not upcoming.empty:
@@ -2254,7 +2278,9 @@ def render_chart(
         lbl, val = _spread_display_parts(r)
         return f"{lbl}: {val}"
 
-    df_plot["Spread display"] = df_plot.apply(_spread_display_text_row, axis=1)
+    spread_columns = ["Home spread", "Home team", "Spread mode", "Spread source", "Forecast"]
+    spread_rows = df_plot.reindex(columns=spread_columns).to_dict(orient="records")
+    df_plot["Spread display"] = [_spread_display_text_row(row) for row in spread_rows]
 
     game_tooltip = [
         alt.Tooltip("Matchup:N"),
@@ -2590,16 +2616,7 @@ def render_table(
             eligible = day_df.iloc[0:0].copy()
 
         top_star_set, _ = _top_star_sets(eligible)
-        day_df["_away_top_star"] = day_df.apply(
-            lambda r: bool(r.get("_is_today_pt", False))
-            and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
-            axis=1,
-        )
-        day_df["_home_top_star"] = day_df.apply(
-            lambda r: bool(r.get("_is_today_pt", False))
-            and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
-            axis=1,
-        )
+        _set_top_star_flags(day_df, top_star_set)
         if sort_mode == "Tip time" and "Tip dt (PT)" in day_df.columns:
             day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
         else:
@@ -2621,16 +2638,7 @@ def render_table(
                 eligible = day_df.iloc[0:0].copy()
 
             top_star_set, _ = _top_star_sets(eligible)
-            day_df["_away_top_star"] = day_df.apply(
-                lambda r: bool(r.get("_is_today_pt", False))
-                and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
-                axis=1,
-            )
-            day_df["_home_top_star"] = day_df.apply(
-                lambda r: bool(r.get("_is_today_pt", False))
-                and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
-                axis=1,
-            )
+            _set_top_star_flags(day_df, top_star_set)
             if sort_mode == "Tip time" and "Tip dt (PT)" in day_df.columns:
                 day_df = day_df.sort_values("Tip dt (PT)", ascending=True, na_position="last")
             else:
@@ -2648,14 +2656,7 @@ def render_table(
             eligible = flat.iloc[0:0].copy()
 
         top_star_set, _ = _top_star_sets(eligible)
-        flat["_away_top_star"] = flat.apply(
-            lambda r: bool(r.get("_is_today_pt", False)) and _normalize_team_name(str(r.get("Away team", ""))) in top_star_set,
-            axis=1,
-        )
-        flat["_home_top_star"] = flat.apply(
-            lambda r: bool(r.get("_is_today_pt", False)) and _normalize_team_name(str(r.get("Home team", ""))) in top_star_set,
-            axis=1,
-        )
+        _set_top_star_flags(flat, top_star_set)
         if sort_mode == "Tip time" and "Tip dt (PT)" in flat.columns:
             flat = flat.sort_values("Tip dt (PT)", ascending=True, na_position="last")
         else:

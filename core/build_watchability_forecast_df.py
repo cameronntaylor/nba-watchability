@@ -585,15 +585,24 @@ def build_watchability_forecast_df(
             return "League Pass"
         return nba_provider_by_gid.get(str(gid_nba), "League Pass")
 
-    df["Where to watch provider"] = df.apply(_provider_row, axis=1)
-    df["Where to watch URL"] = df.apply(
-        lambda r: watch_destination_url(
-            provider=str(r.get("Where to watch provider") or "League Pass"),
-            direct_game_url=_nba_game_url_row(r),
-            espn_game_id=str(r.get("ESPN game id") or ""),
-        ),
-        axis=1,
-    )
+    # Limit row materialization to the lookup fields. Applying across the full
+    # dataframe forces pandas to box the PT, ET, and UTC datetime blocks into a
+    # single row. pandas 3.1 + python-dateutil 3.0 currently crashes while doing
+    # that for dateutil timezones before the callback is even invoked.
+    watch_lookup_columns = ["ESPN game id", "Local date", "Home team", "Away team"]
+    watch_rows = df.loc[:, watch_lookup_columns].to_dict(orient="records")
+    df["Where to watch provider"] = [_provider_row(row) for row in watch_rows]
+
+    watch_url_columns = ["Where to watch provider", *watch_lookup_columns]
+    watch_url_rows = df.loc[:, watch_url_columns].to_dict(orient="records")
+    df["Where to watch URL"] = [
+        watch_destination_url(
+            provider=str(row.get("Where to watch provider") or "League Pass"),
+            direct_game_url=_nba_game_url_row(row),
+            espn_game_id=str(row.get("ESPN game id") or ""),
+        )
+        for row in watch_url_rows
+    ]
 
     df = df.sort_values(["Local date", "Tip dt (PT)", "aWI"], ascending=[True, True, False]).reset_index(drop=True)
     return df

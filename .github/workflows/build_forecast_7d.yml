@@ -46,7 +46,6 @@ jobs:
           fi
 
       - name: Upload forecast artifact
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: watchability-forecast-7d
