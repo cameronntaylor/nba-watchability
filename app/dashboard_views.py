@@ -98,10 +98,19 @@ def _normalize_dashboard_df_types(df: pd.DataFrame) -> pd.DataFrame:
             d["Local date"] = pd.to_datetime(d["Local date"], errors="coerce").dt.date
         except Exception:
             pass
-    for c in ["Tip dt (PT)", "Tip dt (ET)", "Tip dt (UTC)"]:
+    tip_timezones = {
+        "Tip dt (PT)": "America/Los_Angeles",
+        "Tip dt (ET)": "America/New_York",
+        "Tip dt (UTC)": "UTC",
+    }
+    for c, timezone in tip_timezones.items():
         if c in d.columns:
             try:
-                d[c] = pd.to_datetime(d[c], errors="coerce")
+                # Live data uses dateutil zones; Parquet forecasts use pytz zones.
+                # Parse through UTC so mixing them cannot silently erase tip times.
+                d[c] = pd.to_datetime(
+                    d[c], errors="coerce", utc=True, format="mixed"
+                ).dt.tz_convert(timezone)
             except Exception:
                 continue
     if "Team Quality" not in d.columns and "Team quality" in d.columns:
@@ -1093,7 +1102,6 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
         selected_slate_date = None
 
     is_same_day_slate = bool(selected_slate_date) and selected_slate_date == now_pt.date()
-    is_future_slate = bool(selected_slate_date) and selected_slate_date > now_pt.date()
 
     # Recommendation feature flags (keep infra, but allow disabling specific cards).
     ENABLE_DOUBLEHEADER_REC = False
@@ -1564,17 +1572,17 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
     # transiently omit status or return values such as "scheduled" instead of
     # ESPN's usual "pre"; requiring that exact string made tonight's two games
     # disappear from recommendations even though both tips were still ahead.
-    not_live = ~_coerce_bool_series(d.get("_is_live", False), default=False)
-    not_finished = ~d["_status"].astype(str).str.strip().str.lower().isin({"post", "final"})
-    if is_future_slate:
-        upcoming = d[not_live & not_finished].copy()
-    else:
-        upcoming = d[
-            not_live
-            & not_finished
-            & d["_minutes_to_tip"].notna()
-            & (d["_minutes_to_tip"].astype(float) > 0)
-        ].copy()
+    status = d["_status"].astype(str).str.strip().str.lower()
+    not_live = ~_coerce_bool_series(d["_is_live"], default=False) & (status != "in")
+    not_finished = ~status.isin({"post", "final"})
+    # "Tonight" means today's Pacific date, strictly before the scheduled tip.
+    upcoming = d[
+        not_live
+        & not_finished
+        & d["_is_today_pt"]
+        & d["_minutes_to_tip"].notna()
+        & (d["_minutes_to_tip"].astype(float) > 0)
+    ].copy()
     if not upcoming.empty:
         upcoming_sorted = upcoming.sort_values(["aWI", "_minutes_to_tip"], ascending=[False, True]).reset_index(drop=True)
         rows = [upcoming_sorted.iloc[0]]
@@ -1632,8 +1640,11 @@ def render_recommendations_module(df: pd.DataFrame, *, slate_day: str | None, wr
             except Exception:
                 pass
 
-            grouped = (
-                day_df.dropna(subset=["Local date"])
+            day_df = day_df.dropna(subset=["Local date"])
+            # The tip-time cutoff can remove the final day. Avoid groupby.apply
+            # on an empty frame, whose reset_index would duplicate Local date.
+            grouped = pd.DataFrame() if day_df.empty else (
+                day_df
                 .groupby("Local date", dropna=True)
                 .apply(
                     lambda g: pd.Series(
